@@ -29,20 +29,44 @@ Xtream Codes liberados para ele — ver `DeviceAuthService` /
 
 1. Instale o [Flutter SDK](https://docs.flutter.dev/get-started/install)
    (canal stable) e confirme com `flutter doctor`.
-2. Copie `.env.example` para referência dos valores esperados (o app não lê
-   arquivo `.env` em runtime — o valor é injetado em tempo de build/execução
-   via `--dart-define`, ver seção abaixo).
-3. Instale as dependências:
+2. Instale as dependências:
 
    ```
    flutter pub get
    ```
+3. Configure o `.env` local (ver seção "Rodando o app" abaixo) — `.env.example`
+   documenta a estrutura esperada, mas o app não lê arquivo `.env` em
+   runtime: o valor é sempre injetado em tempo de build/execução via
+   `--dart-define`.
 
 ## Rodando o app
 
 A URL do endpoint de ativação (Google Apps Script) **não fica hardcoded no
 código** — é injetada via `--dart-define` em `AppConfig.appsScriptUrl`
 (`lib/config/app_config.dart`), consumida por `AppConstants.deviceAuthUrl`.
+
+### Com os scripts (recomendado)
+
+`scripts/setup_env.ps1` e `scripts/run_dev.ps1` evitam ter que digitar (ou
+colar sem querer em algum print/gravação) a URL real a cada `flutter run`.
+Funcionam tanto chamados da raiz do projeto quanto de dentro de `scripts/`.
+
+```powershell
+# primeira vez / trocar de painel de testes -- pede a APPS_SCRIPT_URL e
+# grava em .env na raiz (arquivo local, nunca commitado — já está no
+# .gitignore).
+./scripts/setup_env.ps1
+
+# roda o app normalmente, lendo a URL do .env automaticamente:
+./scripts/run_dev.ps1
+./scripts/run_dev.ps1 -Device windows
+./scripts/run_dev.ps1 -Device chrome
+./scripts/run_dev.ps1 -Device <device_id_android_ou_android_tv>
+```
+
+### Manualmente (alternativa)
+
+Também funciona chamar `flutter run` direto, passando o `--dart-define` à mão:
 
 ```
 flutter run --dart-define=APPS_SCRIPT_URL=https://script.google.com/macros/s/SEU_ID_AQUI/exec
