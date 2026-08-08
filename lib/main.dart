@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -14,6 +15,16 @@ import 'screens/splash/splash_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // DIAGNÓSTICO TEMPORÁRIO (investigação de travamento da janela ao cair o
+  // Wi-Fi durante reprodução) — roda pra sempre, independente de qual tela
+  // está em foco, pra revelar se a isolate Dart continua respondendo
+  // (heartbeat nunca para) ou trava junto com a janela (heartbeat some do
+  // console) quando o app congela. Remover junto com os demais debugPrint
+  // depois que a causa raiz for confirmada e corrigida.
+  Timer.periodic(const Duration(milliseconds: 500), (_) {
+    debugPrint('[Heartbeat] ${DateTime.now()}');
+  });
 
   // A fonte Inter é self-hosted (ver assets/fonts/ + a seção "fonts" do
   // pubspec.yaml) e aplicada via TextTheme.apply(fontFamily: 'Inter') em

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
 
 /// Fase atual do [PlaybackHealthMonitor], para quem consome (ex:
@@ -68,10 +69,25 @@ class PlaybackHealthMonitor {
   /// explícito, só fica preso "carregando" indefinidamente.
   static const Duration _stallTimeout = Duration(seconds: 15);
 
+  /// Posição parada além deste tempo (com o player supostamente tocando) é
+  /// tratada como falha — mais curto que [_stallTimeout] de propósito: cobre
+  /// o caso de falha "silenciosa" de rede (o socket não fecha, então o
+  /// media_kit nunca emite nem `stream.error` nem `stream.buffering ==
+  /// true`, só para de avançar a posição), então aqui não há NENHUM outro
+  /// sinal esperando — quanto antes detectar, melhor.
+  static const Duration _progressStallTimeout = Duration(seconds: 10);
+
   StreamSubscription<String>? _errorSub;
   StreamSubscription<bool>? _bufferingSub;
+  StreamSubscription<Duration>? _positionSub;
   Timer? _stallTimer;
+  Timer? _progressStallTimer;
   Timer? _retryTimer;
+
+  /// Última posição recebida de `player.stream.position` — `null` até o
+  /// primeiro tick, para não tratar esse primeiro tick como "posição
+  /// parada" por falta de uma posição anterior pra comparar.
+  Duration? _lastKnownPosition;
 
   bool _disposed = false;
   bool _failedDefinitively = false;
@@ -90,23 +106,146 @@ class PlaybackHealthMonitor {
   /// a [onStatusChange], só que como um valor comparável (não string livre).
   HealthMonitorPhase get phase => _phase;
 
+  /// `true` só quando o USUÁRIO pausou explicitamente pela UI (ver
+  /// [onUserPause]/[onUserPlay]) — DIFERENTE de `player.state.playing ==
+  /// false`, que o media_kit também reporta quando o player fica "faminto"
+  /// por dados (ex: rede caiu) sem nenhuma pausa do usuário. Usar
+  /// `player.state.playing` como proxy de "pausado" no watchdog de posição
+  /// (ver [_onPositionChanged]) SUPRIMIA a detecção justamente no cenário
+  /// que ele deveria pegar — confirmado em teste real (log mostrando
+  /// `player.state.playing == false` sozinho durante queda de Wi-Fi, sem o
+  /// usuário ter tocado em nada).
+  bool _userPaused = false;
+
+  /// Chamado pela UI (ex: `PlayerScreen`) sempre que o USUÁRIO pausa
+  /// explicitamente a reprodução (botão play/pause) — nunca em resposta a
+  /// retry automático. Ver [_userPaused].
+  void onUserPause() => _userPaused = true;
+
+  /// Contraparte de [onUserPause] — chamado quando o usuário retoma a
+  /// reprodução manualmente.
+  void onUserPlay() => _userPaused = false;
+
   void start() {
-    _errorSub = player.stream.error.listen((_) => _handleFailure());
+    // DIAGNÓSTICO TEMPORÁRIO (ver instrumentação pedida para investigar o
+    // caso de Wi-Fi caindo em Windows sem overlay nenhum aparecer) —
+    // remover depois que a causa raiz for confirmada e corrigida.
+    debugPrint('[HealthMonitor] start() chamado, fallbackUrls: $fallbackUrls');
+    _errorSub = player.stream.error.listen((error) {
+      debugPrint('[HealthMonitor] error recebido: $error');
+      _handleFailure();
+    });
     _bufferingSub = player.stream.buffering.listen(_onBufferingChanged);
+    _positionSub = player.stream.position.listen(_onPositionChanged);
+  }
+
+  /// Terceiro mecanismo de detecção, independente de buffering/erro — cobre
+  /// a falha "silenciosa" de rede que nenhum dos outros dois percebe (ver
+  /// [_progressStallTimeout]).
+  ///
+  /// IMPORTANTE: `player.stream.position` é `.distinct()` por construção do
+  /// próprio media_kit (`positionController.stream.distinct(...)` em
+  /// `PlatformPlayer`, confirmado lendo o pacote) — dois valores
+  /// consecutivos IGUAIS nunca chegam como dois ticks separados aqui, o
+  /// segundo é descartado antes de sair do stream. Ou seja, TODO tick que
+  /// este método recebe já É, por definição, progresso real (avanço normal
+  /// ou salto de seek pra qualquer direção); comparar com o valor anterior
+  /// pra "detectar avanço" seria sempre verdadeiro e não serviria pra nada.
+  ///
+  /// Por isso a estratégia é: cada tick observado CANCELA e REARMA
+  /// [_progressStallTimer], adiando o prazo — nunca é o tick em si que
+  /// indica falha. O timer só chega ao fim (e só aí conta como stall) se
+  /// NENHUM tick novo chegar dentro de [_progressStallTimeout], que é a
+  /// única forma real de "posição parada" possível dado o `.distinct()`
+  /// acima: o stream simplesmente fica em silêncio. Só arma quando o
+  /// usuário não pausou explicitamente (ver [_userPaused] — NÃO usa
+  /// `player.state.playing` aqui: o media_kit também reporta `playing ==
+  /// false` quando o player fica sem dados de rede, o que suprimiria a
+  /// detecção justamente no cenário que este watchdog existe pra pegar).
+  void _onPositionChanged(Duration position) {
+    debugPrint('[HealthMonitor] position tick: $position (última: $_lastKnownPosition)');
+    if (_disposed || _failedDefinitively) return;
+
+    _lastKnownPosition = position;
+    _cancelProgressStallTimer('novo tick de posição');
+
+    if (_userPaused) {
+      debugPrint('[HealthMonitor] _onPositionChanged: _userPaused=true, timer NÃO armado');
+      return;
+    }
+
+    debugPrint('[HealthMonitor] _progressStallTimer ARMADO (${_progressStallTimeout.inSeconds}s) a partir do tick $position');
+    _progressStallTimer = Timer(_progressStallTimeout, () {
+      // DIAGNÓSTICO TEMPORÁRIO (investigação de "silêncio total" no
+      // watchdog de posição durante queda de Wi-Fi) — try/catch pra
+      // garantir que uma exceção aqui dentro apareça no console em vez de
+      // ser engolida silenciosamente (Timer não propaga exceções pra
+      // lugar nenhum por padrão). Remover junto com os demais debugPrint
+      // depois que a causa raiz for confirmada e corrigida.
+      try {
+        debugPrint('[HealthMonitor] progress stall timer DISPAROU - chamando _handleFailure()');
+        // Confere de novo no momento do disparo (não só na hora de armar):
+        // o usuário pode ter pausado DEPOIS deste tick, sem gerar um novo
+        // tick que cancelasse este timer (pausa real costuma simplesmente
+        // parar de emitir posição, não emitir um último tick).
+        if (_disposed || _failedDefinitively || _userPaused) {
+          debugPrint(
+            '[HealthMonitor] progress stall timer disparou mas foi IGNORADO pelo guard '
+            '(disposed=$_disposed, failedDefinitively=$_failedDefinitively, '
+            'userPaused=$_userPaused)',
+          );
+          return;
+        }
+        debugPrint(
+          '[HealthMonitor] progress stall detectado - nenhum tick de posição em ${_progressStallTimeout.inSeconds}s',
+        );
+        _handleFailure();
+      } catch (e, stack) {
+        debugPrint('[HealthMonitor] EXCEÇÃO dentro do callback do progress stall timer: $e\n$stack');
+      }
+    });
+  }
+
+  /// Cancela [_progressStallTimer], se houver um em andamento, logando de
+  /// onde partiu a chamada — DIAGNÓSTICO TEMPORÁRIO (investigação de
+  /// "silêncio total" no watchdog de posição) para confirmar se algum
+  /// lugar inesperado está cancelando este timer. Remover junto com os
+  /// demais debugPrint depois que a causa raiz for confirmada e corrigida.
+  void _cancelProgressStallTimer(String origin) {
+    if (_progressStallTimer == null) return;
+    debugPrint('[HealthMonitor] _progressStallTimer CANCELADO (origem: $origin)');
+    _progressStallTimer!.cancel();
+    _progressStallTimer = null;
   }
 
   void _onBufferingChanged(bool buffering) {
+    debugPrint('[HealthMonitor] buffering mudou para: $buffering');
     if (_disposed || _failedDefinitively) return;
 
+    final hadPendingStallTimer = _stallTimer != null;
     _stallTimer?.cancel();
-    _stallTimer = buffering ? Timer(_stallTimeout, _handleFailure) : null;
+
+    if (buffering) {
+      debugPrint('[HealthMonitor] stall timer iniciado (15s)');
+      _stallTimer = Timer(_stallTimeout, () {
+        debugPrint('[HealthMonitor] stall timer disparou - buffering ainda true');
+        _handleFailure();
+      });
+    } else {
+      if (hadPendingStallTimer) {
+        debugPrint('[HealthMonitor] stall timer cancelado - buffering voltou a false');
+      }
+      _stallTimer = null;
+    }
   }
 
   void _handleFailure() {
+    debugPrint('[HealthMonitor] _handleFailure chamado, retryCount=$_retryCount, urlIndex=$_currentUrlIndex');
     if (_disposed || _failedDefinitively || _retryScheduled) return;
 
     _stallTimer?.cancel();
     _stallTimer = null;
+    _cancelProgressStallTimer('_handleFailure (falha real sendo processada)');
 
     if (_retryCount < _maxRetriesPerUrl) {
       // Indexa o delay com o valor ANTES de incrementar (0, 1, 2 -> 2s, 4s,
@@ -122,7 +261,19 @@ class PlaybackHealthMonitor {
       _retryTimer = Timer(delay, () {
         _retryScheduled = false;
         if (_disposed || _failedDefinitively) return;
-        unawaited(player.open(Media(fallbackUrls[_currentUrlIndex])));
+        final url = fallbackUrls[_currentUrlIndex];
+        // DIAGNÓSTICO TEMPORÁRIO (investigação de travamento da janela ao
+        // cair o Wi-Fi durante reprodução) — `whenComplete` só observa o
+        // fim da Future (sucesso ou erro), sem alterar o `unawaited`
+        // fire-and-forget original nem engolir uma exceção que antes
+        // vazaria. Remover junto com os demais debugPrint depois que a
+        // causa raiz for confirmada e corrigida.
+        debugPrint('[HealthMonitor] ${DateTime.now()} player.open() START (retry) url=$url');
+        unawaited(
+          player.open(Media(url)).whenComplete(() {
+            debugPrint('[HealthMonitor] ${DateTime.now()} player.open() END (retry) url=$url');
+          }),
+        );
       });
       return;
     }
@@ -149,6 +300,8 @@ class PlaybackHealthMonitor {
     _retryTimer = null;
     _stallTimer?.cancel();
     _stallTimer = null;
+    _cancelProgressStallTimer('reset()');
+    _lastKnownPosition = null;
     _currentUrlIndex = 0;
     _retryCount = 0;
     _retryScheduled = false;
@@ -160,7 +313,9 @@ class PlaybackHealthMonitor {
     _disposed = true;
     _retryTimer?.cancel();
     _stallTimer?.cancel();
+    _cancelProgressStallTimer('dispose()');
     unawaited(_errorSub?.cancel());
     unawaited(_bufferingSub?.cancel());
+    unawaited(_positionSub?.cancel());
   }
 }
