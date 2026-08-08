@@ -11,6 +11,7 @@ import 'package:window_manager/window_manager.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/watch_progress.dart';
 import '../../providers/player_provider.dart';
+import '../../services/playback_health_monitor.dart';
 import '../../widgets/dpad_focus_highlight.dart';
 
 /// Tela de reprodução: recebe apenas [url] + [title] (+ metadados
@@ -39,12 +40,19 @@ class PlayerScreen extends StatelessWidget {
   /// salvo) — 0 (padrão) em qualquer outro fluxo, sempre começa do início.
   final double startAtSeconds;
 
+  /// Cadeia de URLs alternativas para o [PlaybackHealthMonitor] percorrer em
+  /// caso de falha de reprodução (tipicamente vinda de
+  /// `StreamUrlBuilder.buildFallbackChain`) — padrão `[url]` (só a própria
+  /// URL, sem troca de qualidade/rota) para compatibilidade com quem ainda
+  /// não monta uma cadeia (VOD/série, ver HomeScreen._playMovie).
+  final List<String> fallbackUrls;
+
   /// Só usado em testes, para injetar um [PlayerProvider] com um [Player]
   /// fake (evita instanciar o media_kit de verdade, que não roda em
   /// `flutter_test`). Em produção fica sempre `null`.
   final PlayerProvider? playerProvider;
 
-  const PlayerScreen({
+  PlayerScreen({
     super.key,
     required this.url,
     required this.title,
@@ -53,7 +61,8 @@ class PlayerScreen extends StatelessWidget {
     this.progressType,
     this.startAtSeconds = 0,
     this.playerProvider,
-  });
+    List<String>? fallbackUrls,
+  }) : fallbackUrls = fallbackUrls ?? [url];
 
   @override
   Widget build(BuildContext context) {
@@ -66,6 +75,7 @@ class PlayerScreen extends StatelessWidget {
         imageUrl: imageUrl,
         progressType: progressType,
         startAtSeconds: startAtSeconds,
+        fallbackUrls: fallbackUrls,
       ),
     );
   }
@@ -80,6 +90,7 @@ class _PlayerScreenBody extends StatefulWidget {
   final String? imageUrl;
   final WatchProgressType? progressType;
   final double startAtSeconds;
+  final List<String> fallbackUrls;
 
   const _PlayerScreenBody({
     required this.url,
@@ -88,6 +99,7 @@ class _PlayerScreenBody extends StatefulWidget {
     this.imageUrl,
     this.progressType,
     this.startAtSeconds = 0,
+    required this.fallbackUrls,
   });
 
   @override
@@ -131,6 +143,35 @@ class _PlayerScreenBodyState extends State<_PlayerScreenBody> {
   String? _seekFeedbackText;
   Timer? _seekFeedbackTimer;
 
+  // Observa o Player por baixo e tenta se recuperar sozinho de falhas
+  // (retry com backoff, depois troca de URL na cadeia de fallbackUrls) —
+  // ver PlaybackHealthMonitor. Sempre instanciado (mesmo com a cadeia
+  // padrão de 1 entrada, ver PlayerScreen.fallbackUrls) para que VOD/série
+  // já se beneficiem do retry automático, mesmo sem troca de URL.
+  PlaybackHealthMonitor? _healthMonitor;
+
+  // Texto de status do _healthMonitor ("Reconectando...", "Tentando
+  // qualidade alternativa...", "Falha definitiva") exibido num overlay
+  // discreto — `null` quando não há nada de anormal acontecendo.
+  String? _healthStatus;
+
+  // Espelha _healthMonitor.phase (atualizado sempre junto de _healthStatus,
+  // ver onStatusChange abaixo) — usado (em vez do texto livre de
+  // _healthStatus) para decidir se o _ErrorOverlay deve ficar suprimido
+  // enquanto o monitor ainda está tentando se recuperar sozinho (ver
+  // _ErrorOverlay.suppressed abaixo).
+  HealthMonitorPhase _healthPhase = HealthMonitorPhase.idle;
+
+  // Guardado à parte (em vez de `context.read<PlayerProvider>()` de novo em
+  // `dispose()`) de propósito: por volta do desmonte da árvore, o Element
+  // desta tela pode já estar desativado quando `dispose()` roda, e uma nova
+  // busca de ancestral nesse momento é insegura ("Looking up a deactivated
+  // widget's ancestor is unsafe" — achado rodando a suíte de testes).
+  // Guardar a referência enquanto o contexto ainda está garantidamente
+  // ativo (`initState`) evita essa busca tardia. Mesmo padrão já usado em
+  // `_contentProvider` na HomeScreen.
+  late final PlayerProvider _playerProvider = context.read<PlayerProvider>();
+
   @override
   void initState() {
     super.initState();
@@ -141,6 +182,29 @@ class _PlayerScreenBodyState extends State<_PlayerScreenBody> {
         DeviceOrientation.landscapeRight,
       ]);
     }
+
+    _playerProvider.addListener(_onPlayerProviderChanged);
+    _healthMonitor = PlaybackHealthMonitor(
+      player: _playerProvider.player,
+      fallbackUrls: widget.fallbackUrls,
+      onStatusChange: (status) {
+        if (!mounted) return;
+        setState(() {
+          _healthStatus = status;
+          _healthPhase = _healthMonitor!.phase;
+        });
+      },
+      onUrlSwitch: (newUrl) {
+        if (!mounted) return;
+        _playerProvider.playUrl(
+              newUrl,
+              title: widget.title,
+              contentId: widget.contentId,
+              imageUrl: widget.imageUrl,
+              progressType: widget.progressType,
+            );
+      },
+    )..start();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -169,10 +233,32 @@ class _PlayerScreenBodyState extends State<_PlayerScreenBody> {
     _scheduleHideControls();
   }
 
+  /// Some o overlay de status assim que a reprodução volta a fluir de
+  /// verdade — o [PlaybackHealthMonitor] nunca emite um status de
+  /// "recuperado" (só os de falha/retry, ver [_healthMonitor]), então é
+  /// esta tela quem decide esconder o próprio aviso ao ver o
+  /// [PlayerProvider] chegar em [PlayerLoadStatus.playing].
+  void _onPlayerProviderChanged() {
+    if (!mounted || _healthStatus == null) return;
+    if (_playerProvider.status == PlayerLoadStatus.playing) {
+      // Só limpa o espelho local de UI (_healthPhase) — não chama
+      // _healthMonitor.reset() aqui: os contadores internos de retry/URL
+      // atual devem continuar de onde pararam se uma falha nova acontecer
+      // logo em seguida, só o AVISO na tela é que não faz mais sentido
+      // depois que a reprodução volta a fluir.
+      setState(() {
+        _healthStatus = null;
+        _healthPhase = HealthMonitorPhase.idle;
+      });
+    }
+  }
+
   @override
   void dispose() {
     _hideControlsTimer?.cancel();
     _seekFeedbackTimer?.cancel();
+    _playerProvider.removeListener(_onPlayerProviderChanged);
+    _healthMonitor?.dispose();
     _backFocusNode.dispose();
     _playPauseFocusNode.dispose();
     _fullscreenFocusNode.dispose();
@@ -251,6 +337,21 @@ class _PlayerScreenBodyState extends State<_PlayerScreenBody> {
     Navigator.of(context).pop();
   }
 
+  /// Botão "Tentar novamente" do [_ErrorOverlay] — zera o ciclo de
+  /// retry/fallback do [_healthMonitor] (senão a próxima falha herdaria o
+  /// índice de URL/contagem de tentativas já gastos deste ciclo) antes de
+  /// pedir ao [PlayerProvider] para reabrir a última URL.
+  Future<void> _retry() async {
+    _healthMonitor?.reset();
+    if (_healthStatus != null || _healthPhase != HealthMonitorPhase.idle) {
+      setState(() {
+        _healthStatus = null;
+        _healthPhase = HealthMonitorPhase.idle;
+      });
+    }
+    await _playerProvider.retry();
+  }
+
   /// Mesmo padrão do [_toggleFullscreen]: reexibe os controles/reinicia o
   /// timer de auto-hide explicitamente em vez de depender do
   /// `GestureDetector` externo também disparar em cima do toque no botão.
@@ -326,8 +427,18 @@ class _PlayerScreenBodyState extends State<_PlayerScreenBody> {
                     const _BufferingIndicator(),
                     _ErrorOverlay(
                       retryFocusNode: _retryFocusNode,
-                      onRetry: () => context.read<PlayerProvider>().retry(),
+                      onRetry: _retry,
+                      // Enquanto o _healthMonitor ainda está tentando se
+                      // recuperar sozinho (retry com backoff ou troca de
+                      // URL), o _HealthStatusOverlay abaixo já comunica que
+                      // algo está sendo feito automaticamente — mostrar o
+                      // botão "Tentar novamente" ao mesmo tempo seria
+                      // redundante/confuso. Só quando o monitor desiste de
+                      // vez (.failed) é que faz sentido pedir uma ação
+                      // manual do usuário.
+                      suppressed: _healthPhase == HealthMonitorPhase.retrying,
                     ),
+                    _HealthStatusOverlay(status: _healthStatus),
                     _SeekFeedbackOverlay(text: _seekFeedbackText),
                     AnimatedOpacity(
                       opacity: _controlsVisible ? 1 : 0,
@@ -410,14 +521,25 @@ class _ErrorOverlay extends StatelessWidget {
   final VoidCallback onRetry;
   final FocusNode retryFocusNode;
 
-  const _ErrorOverlay({required this.onRetry, required this.retryFocusNode});
+  /// `true` enquanto o [PlaybackHealthMonitor] ainda está tentando se
+  /// recuperar sozinho (ver [HealthMonitorPhase.retrying]) — o overlay fica
+  /// escondido mesmo com [PlayerProvider.status] em erro, porque o
+  /// [_HealthStatusOverlay] já comunica que algo está em andamento e pedir
+  /// uma ação manual do usuário nesse momento seria redundante/confuso.
+  final bool suppressed;
+
+  const _ErrorOverlay({
+    required this.onRetry,
+    required this.retryFocusNode,
+    this.suppressed = false,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Selector<PlayerProvider, ({PlayerLoadStatus status, String? message})>(
       selector: (_, provider) => (status: provider.status, message: provider.errorMessage),
       builder: (context, data, _) {
-        if (data.status != PlayerLoadStatus.error) return const SizedBox.shrink();
+        if (suppressed || data.status != PlayerLoadStatus.error) return const SizedBox.shrink();
 
         return Container(
           color: Colors.black87,
@@ -710,6 +832,47 @@ class _SeekFeedbackOverlay extends StatelessWidget {
                     style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold),
                   ),
                 ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Banner discreto no topo da tela com o status do [PlaybackHealthMonitor]
+/// ("Reconectando...", "Tentando qualidade alternativa...", "Falha
+/// definitiva") — `IgnorePointer` porque é só informativo, nunca deve
+/// roubar toque/D-Pad dos controles reais por baixo.
+class _HealthStatusOverlay extends StatelessWidget {
+  final String? status;
+
+  const _HealthStatusOverlay({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: SafeArea(
+        child: Align(
+          alignment: Alignment.topCenter,
+          child: Padding(
+            padding: const EdgeInsets.only(top: 56),
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 200),
+              child: status == null
+                  ? const SizedBox.shrink(key: ValueKey('health-status-empty'))
+                  : Container(
+                      key: const ValueKey('health-status-visible'),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withAlpha(180),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        status!,
+                        style: const TextStyle(color: Colors.white, fontSize: 13),
+                      ),
+                    ),
+            ),
+          ),
         ),
       ),
     );

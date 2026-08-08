@@ -12,6 +12,7 @@ import '../../providers/auth_provider.dart';
 import '../../providers/content_provider.dart';
 import '../../providers/continue_watching_provider.dart';
 import '../../providers/profiles_provider.dart';
+import '../../services/stream_url_builder.dart';
 import '../../widgets/dpad_focus_highlight.dart';
 import '../../widgets/network_image_with_fallback.dart';
 import '../../widgets/skeleton_loader.dart';
@@ -906,13 +907,25 @@ void _playLiveChannel(BuildContext context, LiveStream channel) {
   final apiService = context.read<AuthProvider>().apiService;
   if (apiService == null) return;
 
-  final url = apiService.buildLiveStreamUrl(channel.streamId.toString());
+  // Cadeia de URLs alternativas (TS direto -> HLS direto -> get.php TS ->
+  // get.php HLS) que o PlaybackHealthMonitor percorre sozinho se a
+  // reprodução falhar — só para Live TV por enquanto (VOD/série continuam
+  // com o fluxo atual, sem fallbackUrls, ver HomeScreen._playMovie).
+  final fallbackUrls = StreamUrlBuilder.buildFallbackChain(
+    dns: apiService.dns,
+    username: apiService.username,
+    password: apiService.password,
+    streamId: channel.streamId.toString(),
+    contentType: StreamContentType.live,
+  );
 
   // Live TV nunca gera progresso salvo (sem contentId/progressType aqui,
   // ver PlayerProvider) — nada a recarregar ao voltar.
-  Navigator.of(
-    context,
-  ).push(fadeSlideRoute((_) => PlayerScreen(url: url, title: channel.name)));
+  Navigator.of(context).push(fadeSlideRoute((_) => PlayerScreen(
+        url: fallbackUrls.first,
+        fallbackUrls: fallbackUrls,
+        title: channel.name,
+      )));
 }
 
 void _playMovie(BuildContext context, VodStream movie) {
