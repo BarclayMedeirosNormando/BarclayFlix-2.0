@@ -29,10 +29,20 @@ class ServerSelectionScreen extends StatefulWidget {
   /// `null`).
   final String? existingProfileId;
 
+  /// Nome do cliente (vindo do Master Login, ver [DeviceAuthResult]) — usado
+  /// só para personalizar o título ("Bem-vindo, {nomeCliente}"), nunca para
+  /// a lógica de escolha do servidor. `null` no fluxo de "Trocar de
+  /// servidor" (HomeScreen, ver [existingProfileId]) de propósito: esse
+  /// caminho não passa pelo Master Login de novo, então cai no título
+  /// genérico "Escolha um servidor" em vez de buscar o nome com uma
+  /// chamada de rede extra só para isso.
+  final String? nomeCliente;
+
   const ServerSelectionScreen({
     super.key,
     required this.servers,
     this.existingProfileId,
+    this.nomeCliente,
   });
 
   @override
@@ -79,6 +89,10 @@ class _ServerSelectionScreenState extends State<ServerSelectionScreen> {
   @override
   Widget build(BuildContext context) {
     final isChoosing = _selectingDns != null;
+    final nomeCliente = widget.nomeCliente?.trim();
+    final titulo = (nomeCliente != null && nomeCliente.isNotEmpty)
+        ? 'Bem-vindo, $nomeCliente'
+        : 'Escolha um servidor';
 
     return Scaffold(
       appBar: AppBar(title: const Text('Escolha um servidor')),
@@ -90,10 +104,10 @@ class _ServerSelectionScreenState extends State<ServerSelectionScreen> {
             children: [
               const Icon(Icons.live_tv_rounded, size: 64, color: AppTheme.primaryColor),
               const SizedBox(height: 12),
-              const Text(
-                'Escolha um servidor',
+              Text(
+                titulo,
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 4),
               Text(

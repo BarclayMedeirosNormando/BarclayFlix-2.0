@@ -239,5 +239,8 @@ void main() {
     expect(find.byType(ServerSelectionScreen), findsOneWidget);
     expect(find.text('TVPLAY'), findsOneWidget);
     expect(find.text('P2BRAS'), findsOneWidget);
+    // nomeCliente do Master Login (ver mock acima) chega até o título da
+    // ServerSelectionScreen, de ponta a ponta.
+    expect(find.text('Bem-vindo, Cliente Teste'), findsOneWidget);
   });
 }

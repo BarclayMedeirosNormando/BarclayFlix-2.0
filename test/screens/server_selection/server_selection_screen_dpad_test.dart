@@ -30,6 +30,7 @@ Future<void> pumpServerSelectionScreen(
   WidgetTester tester, {
   bool xtreamShouldFail = false,
   String? existingProfileId,
+  String? nomeCliente,
 }) async {
   FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform({});
 
@@ -63,6 +64,7 @@ Future<void> pumpServerSelectionScreen(
         home: ServerSelectionScreen(
           servers: _servers,
           existingProfileId: existingProfileId,
+          nomeCliente: nomeCliente,
         ),
       ),
     ),
@@ -72,6 +74,36 @@ Future<void> pumpServerSelectionScreen(
 }
 
 void main() {
+  group('Título personalizado (nomeCliente)', () {
+    testWidgets('nomeCliente presente: título mostra "Bem-vindo, {nome}"', (tester) async {
+      await pumpServerSelectionScreen(tester, nomeCliente: 'Cliente Teste');
+
+      expect(find.text('Bem-vindo, Cliente Teste'), findsOneWidget);
+      expect(find.text('Escolha um servidor'), findsOneWidget); // continua só no AppBar
+    });
+
+    testWidgets('nomeCliente com espaços nas bordas: título usa o nome já trimado', (tester) async {
+      await pumpServerSelectionScreen(tester, nomeCliente: '  Cliente Teste  ');
+
+      expect(find.text('Bem-vindo, Cliente Teste'), findsOneWidget);
+    });
+
+    testWidgets('nomeCliente nulo (padrão, ex: "Trocar de servidor"): título cai no genérico', (tester) async {
+      await pumpServerSelectionScreen(tester);
+
+      // "Escolha um servidor" aparece 2x: AppBar + heading do corpo.
+      expect(find.text('Escolha um servidor'), findsNWidgets(2));
+      expect(find.textContaining('Bem-vindo'), findsNothing);
+    });
+
+    testWidgets('nomeCliente vazio/só espaços: título cai no genérico, igual a nulo', (tester) async {
+      await pumpServerSelectionScreen(tester, nomeCliente: '   ');
+
+      expect(find.text('Escolha um servidor'), findsNWidgets(2));
+      expect(find.textContaining('Bem-vindo'), findsNothing);
+    });
+  });
+
   testWidgets('mostra um card por servidor, com o primeiro focado sozinho (sem foco manual)', (tester) async {
     await pumpServerSelectionScreen(tester);
 

@@ -150,7 +150,12 @@ class _ActivationScreenState extends State<ActivationScreen> {
     }
 
     Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => ServerSelectionScreen(servers: result.servidores)),
+      MaterialPageRoute(
+        builder: (_) => ServerSelectionScreen(
+          servers: result.servidores,
+          nomeCliente: result.nomeCliente,
+        ),
+      ),
     );
   }
 
