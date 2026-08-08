@@ -205,6 +205,9 @@ class _PlayerScreenBodyState extends State<_PlayerScreenBody> {
             );
       },
     )..start();
+    // DIAGNÓSTICO TEMPORÁRIO (ver instrumentação em playback_health_monitor.dart)
+    // — remover junto com os demais debugPrint depois de confirmada a causa raiz.
+    debugPrint('[PlayerScreen] HealthMonitor instanciado e iniciado para url: ${widget.url}');
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -437,6 +440,11 @@ class _PlayerScreenBodyState extends State<_PlayerScreenBody> {
                       // vez (.failed) é que faz sentido pedir uma ação
                       // manual do usuário.
                       suppressed: _healthPhase == HealthMonitorPhase.retrying,
+                      // Ver _ErrorOverlay.healthPhase: falha detectada só
+                      // pelo _healthMonitor (stall/progress-stall silencioso)
+                      // nunca passa por PlayerProvider._status == error, então
+                      // o overlay precisa saber da fase do monitor também.
+                      healthPhase: _healthPhase,
                     ),
                     _HealthStatusOverlay(status: _healthStatus),
                     _SeekFeedbackOverlay(text: _seekFeedbackText),
@@ -523,14 +531,28 @@ class _ErrorOverlay extends StatelessWidget {
 
   /// `true` enquanto o [PlaybackHealthMonitor] ainda está tentando se
   /// recuperar sozinho (ver [HealthMonitorPhase.retrying]) — o overlay fica
-  /// escondido mesmo com [PlayerProvider.status] em erro, porque o
-  /// [_HealthStatusOverlay] já comunica que algo está em andamento e pedir
-  /// uma ação manual do usuário nesse momento seria redundante/confuso.
+  /// escondido mesmo com [PlayerProvider.status] em erro (ou [healthPhase]
+  /// em [HealthMonitorPhase.failed]), porque o [_HealthStatusOverlay] já
+  /// comunica que algo está em andamento e pedir uma ação manual do usuário
+  /// nesse momento seria redundante/confuso.
   final bool suppressed;
+
+  /// Fase atual do [PlaybackHealthMonitor] — segunda fonte de "erro real",
+  /// além de [PlayerProvider.status]. Necessária porque falhas detectadas
+  /// só pelo monitor (stall de buffering ou watchdog de posição — rede
+  /// caindo "em silêncio", sem o media_kit emitir `stream.error`) NUNCA
+  /// levam [PlayerProvider._status] a [PlayerLoadStatus.error]: o retry por
+  /// backoff do monitor reabre a URL direto no `Player`, sem passar por
+  /// `PlayerProvider.playUrl`. Sem isso o overlay (e o botão "Tentar
+  /// novamente") nunca aparecia nesse caminho, mesmo com o monitor já tendo
+  /// desistido de vez — só saía do estado saindo da tela e reabrindo o
+  /// canal.
+  final HealthMonitorPhase healthPhase;
 
   const _ErrorOverlay({
     required this.onRetry,
     required this.retryFocusNode,
+    required this.healthPhase,
     this.suppressed = false,
   });
 
@@ -539,7 +561,21 @@ class _ErrorOverlay extends StatelessWidget {
     return Selector<PlayerProvider, ({PlayerLoadStatus status, String? message})>(
       selector: (_, provider) => (status: provider.status, message: provider.errorMessage),
       builder: (context, data, _) {
-        if (suppressed || data.status != PlayerLoadStatus.error) return const SizedBox.shrink();
+        if (suppressed) return const SizedBox.shrink();
+
+        final isProviderError = data.status == PlayerLoadStatus.error;
+        final isHealthMonitorFailed = healthPhase == HealthMonitorPhase.failed;
+        if (!isProviderError && !isHealthMonitorFailed) return const SizedBox.shrink();
+
+        // No caminho do monitor (stall silencioso), o PlayerProvider nunca
+        // chegou a setar errorMessage — usa um texto genérico de conexão em
+        // vez do genérico "não foi possível reproduzir" (esse último cobre
+        // só o caso, teoricamente inesperado, de erro do provider sem
+        // mensagem).
+        final message = data.message ??
+            (isHealthMonitorFailed
+                ? 'Não foi possível reproduzir. Verifique sua conexão.'
+                : 'Não foi possível reproduzir este conteúdo.');
 
         return Container(
           color: Colors.black87,
@@ -552,7 +588,7 @@ class _ErrorOverlay extends StatelessWidget {
                 const Icon(Icons.error_outline, size: 48, color: AppTheme.errorColor),
                 const SizedBox(height: AppSpacing.m),
                 Text(
-                  data.message ?? 'Não foi possível reproduzir este conteúdo.',
+                  message,
                   textAlign: TextAlign.center,
                   style: const TextStyle(color: Colors.white),
                 ),

@@ -15,6 +15,14 @@ class _FaultyFakePlatformPlayer extends FakePlatformPlayer {
   void emitError(String message) => errorController.add(message);
 
   void emitBuffering(bool buffering) => bufferingController.add(buffering);
+
+  /// Ajusta `state.playing` diretamente, sem passar pelo stream `playing`
+  /// (que o fake nunca sincroniza de volta em `state` — ver o comentário em
+  /// `FakePlatformPlayer` sobre `emitPlaying`/`state.playing`). Usado pelos
+  /// testes do watchdog de posição, que precisam simular "player tocando"
+  /// (ou pausado) já que [PlaybackHealthMonitor] lê `player.state.playing`
+  /// direto, não o stream.
+  void setPlaying(bool playing) => state = state.copyWith(playing: playing);
 }
 
 typedef _MonitorSetup = ({
@@ -156,6 +164,64 @@ void main() {
     });
   });
 
+  group('diagnóstico: falha definitiva — phase e onStatusChange', () {
+    test('4 URLs, todas esgotando os retries: phase == failed e "Falha definitiva" é '
+        'reportado EXATAMENTE 1 vez, sem loop infinito', () {
+      fakeAsync((async) {
+        final setup = _buildMonitor(_fallbackUrls);
+
+        expect(setup.monitor.phase, HealthMonitorPhase.idle);
+
+        // Esgota os retries de cada uma das 4 URLs da cadeia. Para as 3
+        // primeiras, a falha seguinte troca de URL; na última, não há mais
+        // pra onde trocar -> falha definitiva.
+        for (var urlIndex = 0; urlIndex < _fallbackUrls.length - 1; urlIndex++) {
+          _exhaustCurrentUrl(async, setup);
+          expect(setup.monitor.phase, HealthMonitorPhase.retrying);
+
+          setup.fake.emitError('falha que aciona a troca de URL');
+          async.flushMicrotasks();
+          expect(setup.monitor.phase, HealthMonitorPhase.retrying);
+        }
+
+        _exhaustCurrentUrl(async, setup);
+        expect(setup.monitor.phase, HealthMonitorPhase.retrying);
+
+        setup.fake.emitError('última falha da cadeia');
+        async.flushMicrotasks();
+
+        // A cadeia inteira foi percorrida (3 trocas de URL) antes de desistir.
+        expect(setup.urlSwitches, [_fallbackUrls[1], _fallbackUrls[2], _fallbackUrls[3]]);
+
+        // phase deve refletir failed (não travar em retrying).
+        expect(setup.monitor.phase, HealthMonitorPhase.failed);
+
+        // onStatusChange foi chamado com 'Falha definitiva' EXATAMENTE 1 vez.
+        expect(
+          setup.statuses.where((s) => s == 'Falha definitiva'),
+          hasLength(1),
+        );
+        expect(setup.statuses.last, 'Falha definitiva');
+
+        // Sem loop infinito: novos erros/stalls/ticks de posição após a
+        // falha definitiva não geram nenhum novo status nem troca de URL,
+        // e phase continua failed.
+        final statusesBefore = List<String>.from(setup.statuses);
+        final switchesBefore = List<String>.from(setup.urlSwitches);
+
+        setup.fake.emitError('erro após falha definitiva');
+        setup.fake.emitBuffering(true);
+        setup.fake.emitPosition(const Duration(seconds: 999));
+        async.flushMicrotasks();
+        async.elapse(const Duration(seconds: 30));
+
+        expect(setup.statuses, statusesBefore);
+        expect(setup.urlSwitches, switchesBefore);
+        expect(setup.monitor.phase, HealthMonitorPhase.failed);
+      });
+    });
+  });
+
   group('stall de buffering (sem erro explícito)', () {
     test('buffering contínuo por 15s é tratado como falha', () {
       fakeAsync((async) {
@@ -183,6 +249,175 @@ void main() {
         async.elapse(const Duration(seconds: 10)); // passaria de 15s se não tivesse cancelado
 
         expect(setup.statuses, isEmpty);
+      });
+    });
+  });
+
+  group('watchdog de posição (falha "silenciosa", sem buffering nem erro)', () {
+    // IMPORTANTE: `player.stream.position` é `.distinct()` por construção do
+    // próprio media_kit — dois ticks consecutivos com o MESMO valor nunca
+    // chegam como dois eventos separados (confirmado empiricamente: um
+    // `emitPosition` repetido com o valor anterior não gera um novo tick no
+    // fake, que usa a mesma base do Player de verdade). Por isso os testes
+    // abaixo cobrem "nenhum tick novo chega" como o único jeito real de
+    // "posição parada", nunca "dois ticks com valor igual".
+    //
+    // TAMBÉM IMPORTANTE: o guard de "pausado" usa `_userPaused` (setado via
+    // `onUserPause()`/`onUserPlay()`), NUNCA `player.state.playing` — bug
+    // real encontrado em teste em dispositivo: o media_kit reporta
+    // `player.state.playing == false` sozinho quando o player fica sem
+    // dados de rede (sem nenhuma pausa do usuário), o que suprimia bem o
+    // cenário que este watchdog existe pra pegar. Por isso os testes abaixo
+    // usam `setup.fake.setPlaying(false)` justamente pra provar que isso
+    // NÃO afeta mais o watchdog.
+
+    test('nenhum tick de posição novo por mais de 10s é tratado como falha', () {
+      fakeAsync((async) {
+        final setup = _buildMonitor(_fallbackUrls);
+
+        setup.fake.emitPosition(const Duration(seconds: 30));
+        async.flushMicrotasks();
+        expect(setup.statuses, isEmpty); // ainda dentro da janela de 10s
+
+        async.elapse(const Duration(seconds: 10)); // silêncio total no stream
+
+        expect(setup.statuses, ['Reconectando... (tentativa 1)']);
+      });
+    });
+
+    test('player.state.playing=false SEM pausa do usuário (ex: sem dados de rede) ainda dispara o watchdog', () {
+      fakeAsync((async) {
+        final setup = _buildMonitor(_fallbackUrls);
+        // Simula o cenário real do bug: o media_kit reporta playing=false
+        // sozinho (rede caiu, player "faminto" por dados) SEM o usuário ter
+        // pausado nada -- onUserPause() nunca é chamado, _userPaused
+        // continua false (padrão).
+        setup.fake.setPlaying(false);
+
+        setup.fake.emitPosition(const Duration(seconds: 30));
+        async.flushMicrotasks();
+        expect(setup.statuses, isEmpty); // ainda dentro da janela de 10s
+
+        async.elapse(const Duration(seconds: 10));
+
+        expect(setup.statuses, ['Reconectando... (tentativa 1)']);
+      });
+    });
+
+    test('onUserPause() suprime o watchdog mesmo com posição parada por mais de 10s', () {
+      fakeAsync((async) {
+        final setup = _buildMonitor(_fallbackUrls);
+        setup.monitor.onUserPause();
+
+        setup.fake.emitPosition(const Duration(seconds: 30));
+        async.elapse(const Duration(seconds: 15));
+
+        expect(setup.statuses, isEmpty);
+      });
+    });
+
+    test('onUserPlay() reabilita o watchdog normalmente depois de uma pausa manual', () {
+      fakeAsync((async) {
+        final setup = _buildMonitor(_fallbackUrls);
+        setup.monitor.onUserPause();
+
+        setup.fake.emitPosition(const Duration(seconds: 30));
+        async.elapse(const Duration(seconds: 15)); // pausado -- nunca dispara
+
+        setup.monitor.onUserPlay();
+        // Valor DIFERENTE do tick anterior de propósito: `player.stream.
+        // position` é `.distinct()` (ver nota no topo do grupo) — repetir
+        // exatamente 30s aqui não geraria um novo evento no stream nenhum.
+        setup.fake.emitPosition(const Duration(seconds: 31));
+        async.flushMicrotasks();
+        expect(setup.statuses, isEmpty); // ainda dentro da janela de 10s
+
+        async.elapse(const Duration(seconds: 10));
+        expect(setup.statuses, ['Reconectando... (tentativa 1)']);
+      });
+    });
+
+    test('onUserPause() DEPOIS do tick que armou o timer (sem novo tick) ainda impede a falha no disparo', () {
+      fakeAsync((async) {
+        final setup = _buildMonitor(_fallbackUrls);
+
+        setup.fake.emitPosition(const Duration(seconds: 30));
+        async.flushMicrotasks();
+
+        // Usuário pausa a meio caminho do timer, sem gerar nenhum tick novo
+        // de posição -- comportamento real de pausa: o stream simplesmente
+        // para de emitir, então só a checagem no MOMENTO DO DISPARO (não só
+        // na hora de armar) pega esse caso.
+        async.elapse(const Duration(seconds: 5));
+        setup.monitor.onUserPause();
+
+        async.elapse(const Duration(seconds: 10)); // passaria dos 10s totais
+
+        expect(setup.statuses, isEmpty);
+      });
+    });
+
+    test('várias ticks de posição avançando nunca deixam o timer chegar aos 10s', () {
+      fakeAsync((async) {
+        final setup = _buildMonitor(_fallbackUrls);
+
+        // 3 ticks de progresso real, cada um bem dentro da janela de 10s —
+        // cada um adia o timer antes que o anterior chegasse a disparar,
+        // mesmo passando de 10s no total acumulado (6+6+6 = 18s).
+        setup.fake.emitPosition(const Duration(seconds: 10));
+        async.elapse(const Duration(seconds: 6));
+        setup.fake.emitPosition(const Duration(seconds: 16));
+        async.elapse(const Duration(seconds: 6));
+        setup.fake.emitPosition(const Duration(seconds: 22));
+        async.elapse(const Duration(seconds: 6));
+
+        expect(setup.statuses, isEmpty);
+      });
+    });
+
+    test('um tick chegando pouco antes do timeout expirar adia a contagem, sem acumular com o timer anterior', () {
+      fakeAsync((async) {
+        final setup = _buildMonitor(_fallbackUrls);
+
+        setup.fake.emitPosition(const Duration(seconds: 30));
+        async.elapse(const Duration(seconds: 9)); // 1s antes do timeout de 10s
+
+        setup.fake.emitPosition(const Duration(seconds: 31)); // novo tick -- reinicia a contagem do zero
+        async.elapse(const Duration(seconds: 9)); // só 9s desde este novo tick
+
+        expect(setup.statuses, isEmpty);
+      });
+    });
+
+    test('seek (posição pula pra trás) adia o timer igual um avanço normal, sem falso positivo', () {
+      fakeAsync((async) {
+        final setup = _buildMonitor(_fallbackUrls);
+
+        setup.fake.emitPosition(const Duration(seconds: 50));
+        async.elapse(const Duration(seconds: 8));
+
+        // -10s: a posição "recua", mas ainda é um tick de verdade (seek
+        // intencional) -- adia o timer igual qualquer outro tick.
+        setup.fake.emitPosition(const Duration(seconds: 40));
+        async.elapse(const Duration(seconds: 8));
+
+        expect(setup.statuses, isEmpty);
+      });
+    });
+
+    test('não conta a mesma falha duas vezes quando erro explícito chega logo após o progress-stall disparar', () {
+      fakeAsync((async) {
+        final setup = _buildMonitor(_fallbackUrls);
+
+        setup.fake.emitPosition(const Duration(seconds: 30));
+        async.elapse(const Duration(seconds: 10)); // dispara o progress-stall timer
+
+        setup.fake.emitError('erro chegando logo depois do progress-stall');
+        async.flushMicrotasks();
+
+        // Só 1 tentativa contabilizada (o erro chegou enquanto um retry já
+        // estava agendado a partir do progress-stall, então foi ignorado).
+        expect(setup.statuses, ['Reconectando... (tentativa 1)']);
       });
     });
   });
@@ -221,6 +456,21 @@ void main() {
         expect(setup.fake.openCallCount, 0);
       });
     });
+
+    test('cancela um progress-stall timer pendente antes de disparar', () {
+      fakeAsync((async) {
+        final setup = _buildMonitor(_fallbackUrls);
+
+        setup.fake.emitPosition(const Duration(seconds: 30));
+        async.elapse(const Duration(seconds: 5)); // ainda dentro dos 10s
+
+        setup.monitor.reset();
+
+        async.elapse(const Duration(seconds: 10)); // passaria dos 10s totais se não tivesse resetado
+
+        expect(setup.statuses, isEmpty);
+      });
+    });
   });
 
   group('dispose()', () {
@@ -236,6 +486,22 @@ void main() {
         // Sem isso o stall timer dispararia handleFailure() mesmo depois do
         // dispose, se a subscription/timer não tivessem sido cancelados.
         async.elapse(const Duration(seconds: 15));
+
+        expect(setup.statuses, isEmpty);
+      });
+    });
+
+    test('cancela a subscription de posição — ticks após dispose são ignorados', () {
+      fakeAsync((async) {
+        final setup = _buildMonitor(_fallbackUrls);
+
+        setup.monitor.dispose();
+
+        // Sem a subscription cancelada, este tick + silêncio de 10s
+        // armaria e disparia o progress-stall normalmente (ver teste
+        // equivalente no grupo do watchdog de posição).
+        setup.fake.emitPosition(const Duration(seconds: 30));
+        async.elapse(const Duration(seconds: 10));
 
         expect(setup.statuses, isEmpty);
       });
