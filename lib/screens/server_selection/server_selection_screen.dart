@@ -1,0 +1,175 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../../core/theme/app_theme.dart';
+import '../../data/models/device_login_result.dart';
+import '../../providers/auth_provider.dart';
+import '../../providers/profiles_provider.dart';
+import '../../widgets/dpad_focus_highlight.dart';
+import '../home/home_screen.dart';
+
+/// Tela cheia (NUNCA um dialog/AlertDialog — ver histórico: um modal
+/// sobreposto à tela de ativação era visualmente confuso e pior pra foco de
+/// D-Pad em TV) de escolha de servidor. Mesmo estilo visual da
+/// ActivationScreen (ícone de TV, mesma paleta) pra manter a identidade do
+/// fluxo de autenticação.
+///
+/// Alcançada de duas formas:
+/// - Primeira ativação (ActivationScreen, logo após o dispositivo ser
+///   cadastrado pelo suporte com mais de um servidor vinculado).
+/// - "Trocar de servidor" (HomeScreen, com a lista de servidores
+///   REBUSCADA pela ativação deste mesmo dispositivo — ver
+///   `existingProfileId`).
+class ServerSelectionScreen extends StatefulWidget {
+  final List<ServerOption> servers;
+
+  /// Quando informado, o servidor escolhido ATUALIZA esse [SavedProfile] já
+  /// existente (mesmo id) em vez de criar um novo — é o que diferencia
+  /// "Trocar de servidor" (sempre informado) da primeira ativação (sempre
+  /// `null`).
+  final String? existingProfileId;
+
+  const ServerSelectionScreen({
+    super.key,
+    required this.servers,
+    this.existingProfileId,
+  });
+
+  @override
+  State<ServerSelectionScreen> createState() => _ServerSelectionScreenState();
+}
+
+class _ServerSelectionScreenState extends State<ServerSelectionScreen> {
+  // dns do servidor sendo validado no momento (mostra loading só naquele
+  // card específico) — `null` quando nenhuma escolha está em voo.
+  String? _selectingDns;
+  String? _errorMessage;
+
+  Future<void> _choose(ServerOption server) async {
+    setState(() {
+      _selectingDns = server.dns;
+      _errorMessage = null;
+    });
+
+    final profilesProvider = context.read<ProfilesProvider>();
+    final success = await profilesProvider.chooseServer(
+      server: server,
+      existingProfileId: widget.existingProfileId,
+    );
+
+    if (!mounted) return;
+
+    if (success) {
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const HomeScreen()),
+        (route) => false,
+      );
+      return;
+    }
+
+    // Erro real do backend (dispositivo bloqueado, credencial expirada
+    // nesse meio tempo etc) — nunca trava a tela, só mostra a mensagem e
+    // deixa escolher de novo (o mesmo servidor ou outro).
+    setState(() {
+      _selectingDns = null;
+      _errorMessage = context.read<AuthProvider>().errorMessage ?? 'Não foi possível validar este servidor.';
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isChoosing = _selectingDns != null;
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Escolha um servidor')),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Icon(Icons.live_tv_rounded, size: 64, color: AppTheme.primaryColor),
+              const SizedBox(height: 12),
+              const Text(
+                'Escolha um servidor',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Sua conta tem acesso a mais de um servidor IPTV.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 14, color: Colors.grey.shade400),
+              ),
+              if (_errorMessage != null) ...[
+                const SizedBox(height: 16),
+                Text(
+                  _errorMessage!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: AppTheme.errorColor),
+                ),
+              ],
+              const SizedBox(height: 24),
+              Expanded(
+                child: FocusTraversalGroup(
+                  child: GridView.builder(
+                    gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                      maxCrossAxisExtent: 220,
+                      mainAxisSpacing: 16,
+                      crossAxisSpacing: 16,
+                      childAspectRatio: 1.3,
+                    ),
+                    itemCount: widget.servers.length,
+                    itemBuilder: (context, index) {
+                      final server = widget.servers[index];
+                      final label = server.nome.trim().isNotEmpty ? server.nome.trim() : server.dns;
+                      final isSelectingThis = _selectingDns == server.dns;
+
+                      return DpadFocusHighlight(
+                        key: ValueKey('server_option_${server.dns}'),
+                        builder: (context, focusNode, hasFocus) => InkWell(
+                          autofocus: index == 0,
+                          focusNode: focusNode,
+                          onTap: isChoosing ? null : () => _choose(server),
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: AppTheme.surfaceColor,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            alignment: Alignment.center,
+                            padding: const EdgeInsets.all(12),
+                            child: isSelectingThis
+                                ? const CircularProgressIndicator()
+                                : Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(
+                                        Icons.dns_rounded,
+                                        size: 36,
+                                        color: AppTheme.primaryColor,
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        label,
+                                        textAlign: TextAlign.center,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: AppTheme.cardTitleStyle,
+                                      ),
+                                    ],
+                                  ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

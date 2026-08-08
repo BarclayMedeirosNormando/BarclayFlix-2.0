@@ -1,0 +1,14 @@
+# Copie este arquivo para "key.properties" (mesma pasta, android/key.properties)
+# e preencha os valores abaixo com os dados do SEU keystore de upload.
+#
+# android/key.properties NUNCA deve ir para o controle de versão (já está em
+# android/.gitignore) — cada pessoa que gera um build de release usa o
+# próprio arquivo, local, fora do repositório.
+#
+# Veja o comando exato para gerar o keystore (keytool -genkey ...) na
+# documentação do projeto / resposta que acompanhou este template.
+
+storePassword=
+keyPassword=
+keyAlias=upload
+storeFile=/caminho/para/upload-keystore.jks

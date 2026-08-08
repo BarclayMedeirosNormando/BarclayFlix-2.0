@@ -1,0 +1,65 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+/coverage/
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# Artefatos de release empacotados por versão (ver scripts/build_release.ps1)
+# — binários grandes gerados a partir do código-fonte, nunca commitados.
+/releases/
+
+# Secrets / configuração de ambiente — a URL real do Apps Script (e qualquer
+# outra credencial) entra via --dart-define (ver AppConfig/README.md), nunca
+# commitada. .env.example fica versionado como referência de estrutura.
+.env
+.env.*
+!.env.example
+android/key.properties
+**/*.keystore
+**/*.jks
+google-services.json
+GoogleService-Info.plist
+
+# Windows Desktop build outputs
+/windows/flutter/ephemeral/
+/build/windows/

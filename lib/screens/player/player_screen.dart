@@ -1,0 +1,832 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:media_kit_video/media_kit_video.dart';
+import 'package:provider/provider.dart';
+import 'package:window_manager/window_manager.dart';
+
+import '../../core/theme/app_theme.dart';
+import '../../data/models/watch_progress.dart';
+import '../../providers/player_provider.dart';
+import '../../widgets/dpad_focus_highlight.dart';
+
+/// Tela de reprodução: recebe apenas [url] + [title] (+ metadados
+/// opcionais de "Continuar Assistindo", ver abaixo). Não sabe de onde a URL
+/// veio (Xtream, ou qualquer outra fonte) — baixo acoplamento total com o
+/// resto do app.
+///
+/// Os controles são 100% customizados (ver [_ControlsOverlay]) em vez dos
+/// controles padrão do media_kit_video: os controles padrão (`AdaptiveVideoControls`)
+/// são pensados para toque/mouse e não têm foco/travessia adequados para
+/// D-Pad de Android TV. Construir os nossos desde já — mesmo sem a lógica
+/// completa de D-Pad, que é do próximo módulo — evita reescrever a tela
+/// inteira depois.
+class PlayerScreen extends StatelessWidget {
+  final String url;
+  final String title;
+
+  /// Identifica o conteúdo pra fins de "Continuar Assistindo" — `null`
+  /// (padrão) significa que esta reprodução não deve ter progresso
+  /// rastreado (é o caso de Live TV, ver HomeScreen._playLiveChannel).
+  final String? contentId;
+  final String? imageUrl;
+  final WatchProgressType? progressType;
+
+  /// Retoma a reprodução a partir desta posição (vindo de um progresso
+  /// salvo) — 0 (padrão) em qualquer outro fluxo, sempre começa do início.
+  final double startAtSeconds;
+
+  /// Só usado em testes, para injetar um [PlayerProvider] com um [Player]
+  /// fake (evita instanciar o media_kit de verdade, que não roda em
+  /// `flutter_test`). Em produção fica sempre `null`.
+  final PlayerProvider? playerProvider;
+
+  const PlayerScreen({
+    super.key,
+    required this.url,
+    required this.title,
+    this.contentId,
+    this.imageUrl,
+    this.progressType,
+    this.startAtSeconds = 0,
+    this.playerProvider,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ChangeNotifierProvider(
+      create: (_) => playerProvider ?? PlayerProvider(),
+      child: _PlayerScreenBody(
+        url: url,
+        title: title,
+        contentId: contentId,
+        imageUrl: imageUrl,
+        progressType: progressType,
+        startAtSeconds: startAtSeconds,
+      ),
+    );
+  }
+}
+
+bool get _isDesktopFullscreenCapable => !kIsWeb && Platform.isWindows;
+
+class _PlayerScreenBody extends StatefulWidget {
+  final String url;
+  final String title;
+  final String? contentId;
+  final String? imageUrl;
+  final WatchProgressType? progressType;
+  final double startAtSeconds;
+
+  const _PlayerScreenBody({
+    required this.url,
+    required this.title,
+    this.contentId,
+    this.imageUrl,
+    this.progressType,
+    this.startAtSeconds = 0,
+  });
+
+  @override
+  State<_PlayerScreenBody> createState() => _PlayerScreenBodyState();
+}
+
+class _PlayerScreenBodyState extends State<_PlayerScreenBody> {
+  static const _hideControlsDelay = Duration(seconds: 4);
+
+  // Teclas de seta/ativação que, quando os controles estão escondidos,
+  // devem apenas reexibi-los — sem mover o foco ou ativar o controle que
+  // ficaria embaixo, no mesmo toque.
+  // LogicalKeyboardKey sobrescreve == com igualdade não-primitiva, então
+  // esse Set não pode ser `const` (o analyzer rejeita: const_set_element_not_primitive_equality).
+  static final _revealKeys = {
+    LogicalKeyboardKey.arrowUp,
+    LogicalKeyboardKey.arrowDown,
+    LogicalKeyboardKey.arrowLeft,
+    LogicalKeyboardKey.arrowRight,
+    LogicalKeyboardKey.select,
+    LogicalKeyboardKey.enter,
+    LogicalKeyboardKey.numpadEnter,
+    LogicalKeyboardKey.space,
+    LogicalKeyboardKey.gameButtonA,
+  };
+
+  Timer? _hideControlsTimer;
+  bool _controlsVisible = true;
+  bool _isFullscreen = false;
+
+  final FocusNode _backFocusNode = FocusNode(debugLabel: 'player-back');
+  final FocusNode _playPauseFocusNode = FocusNode(debugLabel: 'player-play-pause');
+  final FocusNode _fullscreenFocusNode = FocusNode(debugLabel: 'player-fullscreen');
+  final FocusNode _seekBackwardFocusNode = FocusNode(debugLabel: 'player-seek-backward');
+  final FocusNode _seekForwardFocusNode = FocusNode(debugLabel: 'player-seek-forward');
+  final FocusNode _retryFocusNode = FocusNode(debugLabel: 'player-retry');
+  final FocusNode _inputFocusNode = FocusNode(debugLabel: 'player-input-surface');
+
+  // Texto momentâneo ("-10s"/"+10s") mostrado ao acionar o seek — só
+  // feedback visual, sem estado de reprodução real por trás.
+  String? _seekFeedbackText;
+  Timer? _seekFeedbackTimer;
+
+  @override
+  void initState() {
+    super.initState();
+
+    if (!_isDesktopFullscreenCapable) {
+      SystemChrome.setPreferredOrientations([
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<PlayerProvider>().playUrl(
+            widget.url,
+            title: widget.title,
+            contentId: widget.contentId,
+            imageUrl: widget.imageUrl,
+            progressType: widget.progressType,
+            startAtSeconds: widget.startAtSeconds,
+          );
+
+      // Os controles (Voltar, play/pause...) já existem desde o primeiro
+      // frame (não dependem da rede) — salta o foco, uma única vez, do
+      // wrapper invisível (`_inputFocusNode`, autofocus acima) pro
+      // primeiro controle de verdade. Sem isso, a primeira seta do D-Pad
+      // não move o foco pra lugar nenhum: esse wrapper fica FORA do
+      // `FocusTraversalGroup` dos controles, e busca DIRECIONAL (seta)
+      // não "entra" nele sozinha — só travessia por ORDEM (`nextFocus`,
+      // equivalente ao Tab) consegue atravessar essa fronteira (achado
+      // empírico rodando o teste que cobre esse cenário: ver "seta move o
+      // foco pros controles, mesmo sem nenhum foco manual antes").
+      _inputFocusNode.nextFocus();
+    });
+
+    _scheduleHideControls();
+  }
+
+  @override
+  void dispose() {
+    _hideControlsTimer?.cancel();
+    _seekFeedbackTimer?.cancel();
+    _backFocusNode.dispose();
+    _playPauseFocusNode.dispose();
+    _fullscreenFocusNode.dispose();
+    _seekBackwardFocusNode.dispose();
+    _seekForwardFocusNode.dispose();
+    _retryFocusNode.dispose();
+    _inputFocusNode.dispose();
+
+    if (!_isDesktopFullscreenCapable) {
+      // Libera a orientação de volta ao padrão do sistema ao sair do player.
+      SystemChrome.setPreferredOrientations([]);
+    }
+    if (_isDesktopFullscreenCapable && _isFullscreen) {
+      windowManager.setFullScreen(false);
+    }
+
+    super.dispose();
+  }
+
+  void _scheduleHideControls() {
+    _hideControlsTimer?.cancel();
+    _hideControlsTimer = Timer(_hideControlsDelay, () {
+      if (!mounted) return;
+      setState(() => _controlsVisible = false);
+      // Ao esconder, o `ExcludeFocus` acima tira o controle que estava
+      // focado (ex: o próprio botão de Voltar, ver o salto inicial de foco
+      // em `initState`) da árvore de foco — sem pedir explicitamente o
+      // foco de volta pro `_inputFocusNode` aqui, a evicção padrão do
+      // Flutter sobe pro FocusScope da ROTA (não pra este nó, que é um
+      // `Focus` comum, não um `FocusScope`), e a partir daí nenhuma seta
+      // alcança mais `_handleSurfaceKeyEvent` pra reexibir os controles
+      // (achado empírico rodando o teste "primeira seta/Enter só revela os
+      // controles...").
+      _inputFocusNode.requestFocus();
+    });
+  }
+
+  void _showControls() {
+    if (!_controlsVisible) {
+      setState(() => _controlsVisible = true);
+    }
+    _scheduleHideControls();
+  }
+
+  /// Intercepta seta/OK enquanto os controles estão escondidos: a primeira
+  /// tecla só os reexibe (consome o evento, não deixa navegar/ativar nada
+  /// "invisível" no mesmo toque). Com os controles já visíveis, apenas
+  /// reinicia o timer de auto-hide e deixa o evento seguir normalmente para
+  /// a navegação/ativação padrão do Flutter (DirectionalFocusIntent /
+  /// ActivateIntent).
+  KeyEventResult _handleSurfaceKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    if (!_revealKeys.contains(event.logicalKey)) return KeyEventResult.ignored;
+
+    if (!_controlsVisible) {
+      _showControls();
+      return KeyEventResult.handled;
+    }
+
+    _scheduleHideControls();
+    return KeyEventResult.ignored;
+  }
+
+  Future<void> _toggleFullscreen() async {
+    if (!_isDesktopFullscreenCapable) return;
+    await windowManager.ensureInitialized();
+    final next = !_isFullscreen;
+    await windowManager.setFullScreen(next);
+    if (!mounted) return;
+    setState(() => _isFullscreen = next);
+    _showControls();
+  }
+
+  Future<void> _exitPlayer() async {
+    if (!mounted) return;
+    Navigator.of(context).pop();
+  }
+
+  /// Mesmo padrão do [_toggleFullscreen]: reexibe os controles/reinicia o
+  /// timer de auto-hide explicitamente em vez de depender do
+  /// `GestureDetector` externo também disparar em cima do toque no botão.
+  void _seekRelative(Duration offset) {
+    context.read<PlayerProvider>().seekRelative(offset);
+    _showControls();
+    _flashSeekFeedback(offset);
+  }
+
+  void _flashSeekFeedback(Duration offset) {
+    _seekFeedbackTimer?.cancel();
+    final sign = offset.isNegative ? '-' : '+';
+    setState(() => _seekFeedbackText = '$sign${offset.abs().inSeconds}s');
+    _seekFeedbackTimer = Timer(const Duration(milliseconds: 700), () {
+      if (mounted) setState(() => _seekFeedbackText = null);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return CallbackShortcuts(
+      bindings: {
+        // Escape = "Voltar" no teclado físico (Windows). O D-Pad "Voltar" do
+        // Android TV não passa por aqui — chega como pop de rota de verdade
+        // (ver PopScope abaixo); os dois caminhos convergem no mesmo
+        // Navigator.maybePop, que respeita a saída de tela cheia primeiro.
+        const SingleActivator(LogicalKeyboardKey.escape): () => Navigator.maybePop(context),
+        // Teclas de mídia física (quando o SO/plataforma as entrega ao
+        // Flutter — não é garantido em todo teclado/dispositivo, ver nota em
+        // PlayerScreen).
+        const SingleActivator(LogicalKeyboardKey.mediaPlayPause):
+            () => context.read<PlayerProvider>().togglePlayPause(),
+        const SingleActivator(LogicalKeyboardKey.mediaPlay):
+            () => context.read<PlayerProvider>().play(),
+        const SingleActivator(LogicalKeyboardKey.mediaPause):
+            () => context.read<PlayerProvider>().pause(),
+      },
+      child: PopScope(
+        // Enquanto em tela cheia (Windows), o botão/tecla de voltar sai da
+        // tela cheia em vez de fechar o player — igual ao comportamento
+        // esperado de qualquer player desktop.
+        canPop: !_isFullscreen,
+        onPopInvokedWithResult: (didPop, result) {
+          if (!didPop && _isFullscreen) {
+            _toggleFullscreen();
+          }
+        },
+        child: Scaffold(
+          backgroundColor: Colors.black,
+          body: MouseRegion(
+            onHover: (_) => _showControls(),
+            cursor: _controlsVisible ? SystemMouseCursors.basic : SystemMouseCursors.none,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _showControls,
+              child: Focus(
+                focusNode: _inputFocusNode,
+                autofocus: true,
+                // Sem skipTraversal, este nó (do tamanho da tela inteira)
+                // concorre geometricamente com os controles de verdade na
+                // busca direcional do D-Pad — e podia "vencer" o botão de
+                // play/pause por estar mais próximo em linha reta do que ele
+                // (achado rodando o teste: ArrowDown a partir de Voltar
+                // caía de volta aqui em vez de ir para o play/pause).
+                // Ele só deve servir de ponto de partida inicial (autofocus)
+                // e de fallback quando os controles estão escondidos.
+                skipTraversal: true,
+                onKeyEvent: _handleSurfaceKeyEvent,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    const _VideoSurface(),
+                    const _BufferingIndicator(),
+                    _ErrorOverlay(
+                      retryFocusNode: _retryFocusNode,
+                      onRetry: () => context.read<PlayerProvider>().retry(),
+                    ),
+                    _SeekFeedbackOverlay(text: _seekFeedbackText),
+                    AnimatedOpacity(
+                      opacity: _controlsVisible ? 1 : 0,
+                      duration: const Duration(milliseconds: 200),
+                      child: IgnorePointer(
+                        ignoring: !_controlsVisible,
+                        // Enquanto escondidos, os controles saem totalmente
+                        // da árvore de foco — sem isso, o D-Pad conseguiria
+                        // "achar" um botão invisível via navegação
+                        // direcional, o que é confuso e o item 2 da tarefa
+                        // pede explicitamente para evitar.
+                        child: ExcludeFocus(
+                          excluding: !_controlsVisible,
+                          child: _ControlsOverlay(
+                            isFullscreenCapable: _isDesktopFullscreenCapable,
+                            isFullscreen: _isFullscreen,
+                            backFocusNode: _backFocusNode,
+                            playPauseFocusNode: _playPauseFocusNode,
+                            fullscreenFocusNode: _fullscreenFocusNode,
+                            seekBackwardFocusNode: _seekBackwardFocusNode,
+                            seekForwardFocusNode: _seekForwardFocusNode,
+                            onBack: _exitPlayer,
+                            onToggleFullscreen: _toggleFullscreen,
+                            onSeek: _seekRelative,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Superfície de vídeo pura. Usa `controls: null` para desligar os
+/// controles padrão do media_kit_video — ver a nota na doc de [PlayerScreen].
+class _VideoSurface extends StatelessWidget {
+  const _VideoSurface();
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = context.read<PlayerProvider>().videoController;
+
+    // Só é null em testes (ver PlayerProvider) — nunca em produção.
+    if (controller == null) return const ColoredBox(color: Colors.black);
+
+    return Video(
+      controller: controller,
+      controls: null,
+      fill: Colors.black,
+    );
+  }
+}
+
+class _BufferingIndicator extends StatelessWidget {
+  const _BufferingIndicator();
+
+  @override
+  Widget build(BuildContext context) {
+    return Selector<PlayerProvider, PlayerLoadStatus>(
+      selector: (_, provider) => provider.status,
+      builder: (context, status, _) {
+        final visible = status == PlayerLoadStatus.loading || status == PlayerLoadStatus.buffering;
+        if (!visible) return const SizedBox.shrink();
+
+        return const Center(
+          child: CircularProgressIndicator(color: AppTheme.primaryColor),
+        );
+      },
+    );
+  }
+}
+
+class _ErrorOverlay extends StatelessWidget {
+  final VoidCallback onRetry;
+  final FocusNode retryFocusNode;
+
+  const _ErrorOverlay({required this.onRetry, required this.retryFocusNode});
+
+  @override
+  Widget build(BuildContext context) {
+    return Selector<PlayerProvider, ({PlayerLoadStatus status, String? message})>(
+      selector: (_, provider) => (status: provider.status, message: provider.errorMessage),
+      builder: (context, data, _) {
+        if (data.status != PlayerLoadStatus.error) return const SizedBox.shrink();
+
+        return Container(
+          color: Colors.black87,
+          alignment: Alignment.center,
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.xl),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline, size: 48, color: AppTheme.errorColor),
+                const SizedBox(height: AppSpacing.m),
+                Text(
+                  data.message ?? 'Não foi possível reproduzir este conteúdo.',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white),
+                ),
+                const SizedBox(height: AppSpacing.l),
+                DpadFocusHighlight(
+                  focusNode: retryFocusNode,
+                  borderRadius: BorderRadius.circular(8),
+                  builder: (context, focusNode, hasFocus) => ElevatedButton.icon(
+                    focusNode: focusNode,
+                    autofocus: true,
+                    onPressed: onRetry,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Tentar novamente'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ControlsOverlay extends StatelessWidget {
+  final bool isFullscreenCapable;
+  final bool isFullscreen;
+  final FocusNode backFocusNode;
+  final FocusNode playPauseFocusNode;
+  final FocusNode fullscreenFocusNode;
+  final FocusNode seekBackwardFocusNode;
+  final FocusNode seekForwardFocusNode;
+  final VoidCallback onBack;
+  final VoidCallback onToggleFullscreen;
+  final ValueChanged<Duration> onSeek;
+
+  const _ControlsOverlay({
+    required this.isFullscreenCapable,
+    required this.isFullscreen,
+    required this.backFocusNode,
+    required this.playPauseFocusNode,
+    required this.fullscreenFocusNode,
+    required this.seekBackwardFocusNode,
+    required this.seekForwardFocusNode,
+    required this.onBack,
+    required this.onToggleFullscreen,
+    required this.onSeek,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return FocusTraversalGroup(
+      child: DecoratedBox(
+        // Gradiente só na base (~40% inferior da tela) — o vídeo fica
+        // visível atrás do resto dos controles, em vez de a tela inteira
+        // escurecer como antes. O título ganha sombra própria (ver
+        // AppTheme.playerTitleStyle) pra continuar legível sem um scrim no
+        // topo.
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Colors.transparent, Colors.black87],
+            stops: [0.6, 1],
+          ),
+        ),
+        child: Column(
+          children: [
+            _TopBar(
+              backFocusNode: backFocusNode,
+              fullscreenFocusNode: fullscreenFocusNode,
+              isFullscreenCapable: isFullscreenCapable,
+              isFullscreen: isFullscreen,
+              onBack: onBack,
+              onToggleFullscreen: onToggleFullscreen,
+            ),
+            const Spacer(),
+            _CenterControls(
+              playPauseFocusNode: playPauseFocusNode,
+              seekBackwardFocusNode: seekBackwardFocusNode,
+              seekForwardFocusNode: seekForwardFocusNode,
+              onSeek: onSeek,
+            ),
+            const Spacer(),
+            const _BottomBar(),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TopBar extends StatelessWidget {
+  final FocusNode backFocusNode;
+  final FocusNode fullscreenFocusNode;
+  final bool isFullscreenCapable;
+  final bool isFullscreen;
+  final VoidCallback onBack;
+  final VoidCallback onToggleFullscreen;
+
+  const _TopBar({
+    required this.backFocusNode,
+    required this.fullscreenFocusNode,
+    required this.isFullscreenCapable,
+    required this.isFullscreen,
+    required this.onBack,
+    required this.onToggleFullscreen,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s, vertical: AppSpacing.xs),
+        child: Row(
+          children: [
+            DpadFocusHighlight(
+              focusNode: backFocusNode,
+              borderRadius: BorderRadius.circular(24),
+              builder: (context, focusNode, hasFocus) => IconButton(
+                focusNode: focusNode,
+                icon: const Icon(Icons.arrow_back, color: Colors.white),
+                tooltip: 'Voltar',
+                onPressed: onBack,
+              ),
+            ),
+            Expanded(
+              child: Selector<PlayerProvider, String?>(
+                selector: (_, provider) => provider.title,
+                builder: (context, title, _) {
+                  return Text(
+                    title ?? '',
+                    overflow: TextOverflow.ellipsis,
+                    style: AppTheme.playerTitleStyle,
+                  );
+                },
+              ),
+            ),
+            if (isFullscreenCapable)
+              DpadFocusHighlight(
+                focusNode: fullscreenFocusNode,
+                borderRadius: BorderRadius.circular(24),
+                builder: (context, focusNode, hasFocus) => IconButton(
+                  focusNode: focusNode,
+                  icon: Icon(
+                    isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
+                    color: Colors.white,
+                  ),
+                  tooltip: isFullscreen ? 'Sair da tela cheia' : 'Tela cheia',
+                  onPressed: onToggleFullscreen,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Cluster central de reprodução: play/pause sozinho em Live TV (sem
+/// posição pra buscar), ou flanqueado por -10s/+10s em VOD/episódio —
+/// layout comum de player: `[-10s] [play/pause] [+10s]`. Fica no mesmo
+/// bloco central (não junto do botão Voltar na barra superior) porque
+/// conceitualmente pertence aos controles de reprodução, não de navegação;
+/// isso também deixa a busca direcional padrão do Flutter (baseada em
+/// geometria) encontrar os botões de seek naturalmente com seta
+/// esquerda/direita a partir do play/pause, sem precisar de nenhuma lógica
+/// de foco customizada.
+class _CenterControls extends StatelessWidget {
+  final FocusNode playPauseFocusNode;
+  final FocusNode seekBackwardFocusNode;
+  final FocusNode seekForwardFocusNode;
+  final ValueChanged<Duration> onSeek;
+
+  const _CenterControls({
+    required this.playPauseFocusNode,
+    required this.seekBackwardFocusNode,
+    required this.seekForwardFocusNode,
+    required this.onSeek,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Selector<PlayerProvider, bool>(
+      selector: (_, provider) => provider.isLive,
+      builder: (context, isLive, _) {
+        if (isLive) {
+          return _CenterPlayPauseButton(focusNode: playPauseFocusNode);
+        }
+
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _SeekButton(
+              focusNode: seekBackwardFocusNode,
+              icon: Icons.replay_10,
+              tooltip: 'Retroceder 10 segundos',
+              onPressed: () => onSeek(const Duration(seconds: -10)),
+            ),
+            const SizedBox(width: AppSpacing.xl),
+            _CenterPlayPauseButton(focusNode: playPauseFocusNode),
+            const SizedBox(width: AppSpacing.xl),
+            _SeekButton(
+              focusNode: seekForwardFocusNode,
+              icon: Icons.forward_10,
+              tooltip: 'Avançar 10 segundos',
+              onPressed: () => onSeek(const Duration(seconds: 10)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _SeekButton extends StatelessWidget {
+  final FocusNode focusNode;
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onPressed;
+
+  const _SeekButton({
+    required this.focusNode,
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return DpadFocusHighlight(
+      focusNode: focusNode,
+      borderRadius: BorderRadius.circular(32),
+      builder: (context, focusNode, hasFocus) => IconButton(
+        focusNode: focusNode,
+        iconSize: 40,
+        icon: Icon(icon, color: Colors.white),
+        tooltip: tooltip,
+        onPressed: onPressed,
+      ),
+    );
+  }
+}
+
+/// Texto momentâneo ("-10s"/"+10s") que aparece e some sozinho ao acionar
+/// um seek — só confirmação visual, sem interação (`IgnorePointer`) e sem
+/// entrar na árvore de foco.
+///
+/// `AnimatedSwitcher` (não `AnimatedOpacity`) de propósito: a barra de
+/// controles já usa um `AnimatedOpacity` pra esconder/mostrar (ver
+/// `_PlayerScreenBodyState.build`), e os testes de D-Pad existentes
+/// localizam esse widget por tipo (`find.byType(AnimatedOpacity)`) — um
+/// segundo `AnimatedOpacity` na árvore quebraria essa busca ao passar a
+/// encontrar dois widgets em vez de um.
+class _SeekFeedbackOverlay extends StatelessWidget {
+  final String? text;
+
+  const _SeekFeedbackOverlay({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Center(
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 150),
+          child: text == null
+              ? const SizedBox.shrink(key: ValueKey('seek-feedback-empty'))
+              : Container(
+                  key: const ValueKey('seek-feedback-visible'),
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withAlpha(160),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    text!,
+                    style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold),
+                  ),
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CenterPlayPauseButton extends StatelessWidget {
+  final FocusNode focusNode;
+
+  const _CenterPlayPauseButton({required this.focusNode});
+
+  @override
+  Widget build(BuildContext context) {
+    return Selector<PlayerProvider, ({PlayerLoadStatus status, bool playing})>(
+      selector: (_, provider) => (status: provider.status, playing: provider.isPlaying),
+      builder: (context, data, _) {
+        if (data.status == PlayerLoadStatus.error) return const SizedBox.shrink();
+
+        return DpadFocusHighlight(
+          focusNode: focusNode,
+          borderRadius: BorderRadius.circular(40),
+          builder: (context, focusNode, hasFocus) => IconButton(
+            focusNode: focusNode,
+            iconSize: 64,
+            icon: Icon(
+              data.playing ? Icons.pause_circle_filled : Icons.play_circle_fill,
+              color: Colors.white,
+            ),
+            onPressed: () => context.read<PlayerProvider>().togglePlayPause(),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _BottomBar extends StatelessWidget {
+  const _BottomBar();
+
+  @override
+  Widget build(BuildContext context) {
+    return Selector<PlayerProvider, ({Duration position, Duration duration, bool live})>(
+      selector: (_, provider) => (
+        position: provider.position,
+        duration: provider.duration,
+        live: provider.isLive,
+      ),
+      builder: (context, data, _) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.l, vertical: AppSpacing.s),
+            child: data.live
+                ? const Align(
+                    alignment: Alignment.centerLeft,
+                    child: _LiveBadge(),
+                  )
+                : Row(
+                    children: [
+                      Text(_formatDuration(data.position), style: const TextStyle(color: Colors.white, fontSize: 12)),
+                      Expanded(
+                        // Fora da navegação por D-Pad de propósito: o Slider
+                        // do Flutter, quando focado, captura as 4 setas para
+                        // ajustar o próprio valor (inclusive cima/baixo) —
+                        // ou seja, uma vez focado, não haveria como sair dele
+                        // só com o D-Pad (sem Tab, que Android TV não tem).
+                        // Continua 100% arrastável por toque/mouse.
+                        child: ExcludeFocus(
+                          child: Slider(
+                            value: data.position.inMilliseconds
+                                .clamp(0, data.duration.inMilliseconds)
+                                .toDouble(),
+                            max: data.duration.inMilliseconds > 0
+                                ? data.duration.inMilliseconds.toDouble()
+                                : 1,
+                            activeColor: AppTheme.primaryColor,
+                            onChanged: (value) {
+                              context
+                                  .read<PlayerProvider>()
+                                  .seek(Duration(milliseconds: value.round()));
+                            },
+                          ),
+                        ),
+                      ),
+                      Text(_formatDuration(data.duration), style: const TextStyle(color: Colors.white, fontSize: 12)),
+                    ],
+                  ),
+          ),
+        );
+      },
+    );
+  }
+
+  String _formatDuration(Duration duration) {
+    String twoDigits(int n) => n.toString().padLeft(2, '0');
+    final hours = duration.inHours;
+    final minutes = twoDigits(duration.inMinutes.remainder(60));
+    final seconds = twoDigits(duration.inSeconds.remainder(60));
+    return hours > 0 ? '$hours:$minutes:$seconds' : '$minutes:$seconds';
+  }
+}
+
+class _LiveBadge extends StatelessWidget {
+  const _LiveBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: AppTheme.errorColor,
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: const Text(
+        'AO VIVO',
+        style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+      ),
+    );
+  }
+}
