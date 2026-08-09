@@ -498,10 +498,18 @@ class _VideoSurface extends StatelessWidget {
     // Só é null em testes (ver PlayerProvider) — nunca em produção.
     if (controller == null) return const ColoredBox(color: Colors.black);
 
-    return Video(
-      controller: controller,
-      controls: null,
-      fill: Colors.black,
+    // RepaintBoundary isola a superfície de vídeo do resto da árvore do
+    // player (controles, overlays de status/erro, indicador de buffering)
+    // — sem ele, qualquer repaint desses widgets (ex: AnimatedOpacity dos
+    // controles, o Selector de posição atualizando a cada tick) força o
+    // Flutter a considerar repintar a camada de vídeo também, mesmo o
+    // frame do media_kit não tendo mudado.
+    return RepaintBoundary(
+      child: Video(
+        controller: controller,
+        controls: null,
+        fill: Colors.black,
+      ),
     );
   }
 }
