@@ -29,13 +29,14 @@ class ServerSelectionScreen extends StatefulWidget {
   /// `null`).
   final String? existingProfileId;
 
-  /// Nome do cliente (vindo do Master Login, ver [DeviceAuthResult]) — usado
-  /// só para personalizar o título ("Bem-vindo, {nomeCliente}"), nunca para
-  /// a lógica de escolha do servidor. `null` no fluxo de "Trocar de
-  /// servidor" (HomeScreen, ver [existingProfileId]) de propósito: esse
-  /// caminho não passa pelo Master Login de novo, então cai no título
-  /// genérico "Escolha um servidor" em vez de buscar o nome com uma
-  /// chamada de rede extra só para isso.
+  /// Nome do cliente (vindo do Master Login/ativação de dispositivo, ver
+  /// [DeviceAuthResult]) — personaliza o título ("Bem-vindo, {nomeCliente}")
+  /// e é repassado a [ProfilesProvider.chooseServer] para persistir no
+  /// [SavedProfile] resultante. Nunca usado na lógica de escolha do
+  /// servidor em si. Quando `null`/vazio, o título cai no fallback do
+  /// perfil salvo mais recente (ver [build]), e só se este também não
+  /// tiver um nome persistido é que vira o título genérico "Escolha um
+  /// servidor".
   final String? nomeCliente;
 
   const ServerSelectionScreen({
@@ -65,6 +66,7 @@ class _ServerSelectionScreenState extends State<ServerSelectionScreen> {
     final success = await profilesProvider.chooseServer(
       server: server,
       existingProfileId: widget.existingProfileId,
+      nomeCliente: widget.nomeCliente,
     );
 
     if (!mounted) return;
@@ -89,7 +91,11 @@ class _ServerSelectionScreenState extends State<ServerSelectionScreen> {
   @override
   Widget build(BuildContext context) {
     final isChoosing = _selectingDns != null;
-    final nomeCliente = widget.nomeCliente?.trim();
+    final freshNomeCliente = widget.nomeCliente?.trim();
+    final persistedNomeCliente = context.watch<ProfilesProvider>().savedProfile?.nomeCliente?.trim();
+    final nomeCliente = (freshNomeCliente != null && freshNomeCliente.isNotEmpty)
+        ? freshNomeCliente
+        : persistedNomeCliente;
     final titulo = (nomeCliente != null && nomeCliente.isNotEmpty)
         ? 'Bem-vindo, $nomeCliente'
         : 'Escolha um servidor';

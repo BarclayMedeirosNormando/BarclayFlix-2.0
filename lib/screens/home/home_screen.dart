@@ -263,6 +263,7 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
         builder: (_) => ServerSelectionScreen(
           servers: result.servidores,
           existingProfileId: profile.id,
+          nomeCliente: result.nomeCliente,
         ),
       ),
     );

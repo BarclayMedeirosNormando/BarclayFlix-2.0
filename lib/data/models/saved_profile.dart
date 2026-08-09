@@ -25,6 +25,14 @@ class SavedProfile {
   /// tiveram essa informação.
   final String? nomeServidor;
 
+  /// Nome do cliente (vindo do Master Login/ativação de dispositivo, ver
+  /// DeviceAuthResult) — persistido para que a saudação "Bem-vindo,
+  /// {nomeCliente}" (ServerSelectionScreen) sobreviva a fechar/reabrir o
+  /// app, e não dependa de o fluxo atual ter acabado de buscar esse nome de
+  /// novo na rede. `null` para perfis que nunca receberam esse dado (ex:
+  /// migrados da credencial única legada).
+  final String? nomeCliente;
+
   final DateTime? dataUltimoAcesso;
 
   const SavedProfile({
@@ -34,6 +42,7 @@ class SavedProfile {
     required this.xtreamPassword,
     required this.dns,
     this.nomeServidor,
+    this.nomeCliente,
     this.dataUltimoAcesso,
   });
 
@@ -45,6 +54,7 @@ class SavedProfile {
       xtreamPassword: asString(json['xtreamPassword']),
       dns: asString(json['dns']),
       nomeServidor: asStringOrNull(json['nomeServidor']),
+      nomeCliente: asStringOrNull(json['nomeCliente']),
       dataUltimoAcesso: DateTime.tryParse(asString(json['dataUltimoAcesso'])),
     );
   }
@@ -57,6 +67,7 @@ class SavedProfile {
       'xtreamPassword': xtreamPassword,
       'dns': dns,
       if (nomeServidor != null) 'nomeServidor': nomeServidor,
+      if (nomeCliente != null) 'nomeCliente': nomeCliente,
       if (dataUltimoAcesso != null) 'dataUltimoAcesso': dataUltimoAcesso!.toIso8601String(),
     };
   }
@@ -67,6 +78,7 @@ class SavedProfile {
     String? xtreamPassword,
     String? dns,
     String? nomeServidor,
+    String? nomeCliente,
     DateTime? dataUltimoAcesso,
   }) {
     return SavedProfile(
@@ -76,6 +88,7 @@ class SavedProfile {
       xtreamPassword: xtreamPassword ?? this.xtreamPassword,
       dns: dns ?? this.dns,
       nomeServidor: nomeServidor ?? this.nomeServidor,
+      nomeCliente: nomeCliente ?? this.nomeCliente,
       dataUltimoAcesso: dataUltimoAcesso ?? this.dataUltimoAcesso,
     );
   }
