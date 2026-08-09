@@ -35,6 +35,22 @@ Future<http.Response> Function(http.Request) _buildHandler({
   String? errorMessageForDevice,
 }) {
   return (request) async {
+    // Checa a rota Xtream PRIMEIRO, por um sufixo de path especifico
+    // (`/player_api.php`) -- nunca por `AppConstants.deviceAuthUrl`, que em
+    // `flutter test` (sem `--dart-define=APPS_SCRIPT_URL=...`) resolve pra
+    // string vazia, e `startsWith('')` bateria com QUALQUER URL, inclusive
+    // a da Xtream, fazendo o login de servidor cair aqui por engano. Em
+    // produção isso nunca acontece (a URL do Apps Script é injetada em
+    // build time e nunca colide com o `dns` de um servidor Xtream), então é
+    // só o fixture de teste que precisa dessa ordem.
+    if (request.url.path.endsWith(AppConstants.xtreamPlayerApiPath)) {
+      if (delayXtreamUntil != null) await delayXtreamUntil.future;
+      return _json({
+        'user_info': {'auth': 1, 'status': 'Active'},
+        'server_info': {'url': 'servidor-teste.com', 'port': '8080'},
+      });
+    }
+
     if (request.url.toString().startsWith(AppConstants.deviceAuthUrl)) {
       if (errorCodeForDevice != null) {
         return _json({
@@ -55,14 +71,6 @@ Future<http.Response> Function(http.Request) _buildHandler({
                 'password': 'senha_servidor',
               },
             ],
-      });
-    }
-
-    if (request.url.path.endsWith(AppConstants.xtreamPlayerApiPath)) {
-      if (delayXtreamUntil != null) await delayXtreamUntil.future;
-      return _json({
-        'user_info': {'auth': 1, 'status': 'Active'},
-        'server_info': {'url': 'servidor-teste.com', 'port': '8080'},
       });
     }
 
