@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/theme/app_theme.dart';
@@ -56,6 +57,28 @@ class _ServerSelectionScreenState extends State<ServerSelectionScreen> {
   String? _selectingDns;
   String? _errorMessage;
 
+  // Versão instalada do app (package_info_plus, mesmo mecanismo usado pelo
+  // check_version do Master Login para comparar com a versão mais recente).
+  // Lida em segundo plano — a tela nunca espera por ela: começa `null` e o
+  // título "Bem-vindo" ganha o sufixo " - v{versao}" assim que resolver.
+  String? _appVersion;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAppVersion();
+  }
+
+  Future<void> _loadAppVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (!mounted) return;
+      setState(() => _appVersion = info.version);
+    } catch (_) {
+      // Sem versão disponível: título cai para o formato sem sufixo.
+    }
+  }
+
   Future<void> _choose(ServerOption server) async {
     setState(() {
       _selectingDns = server.dns;
@@ -97,7 +120,7 @@ class _ServerSelectionScreenState extends State<ServerSelectionScreen> {
         ? freshNomeCliente
         : persistedNomeCliente;
     final titulo = (nomeCliente != null && nomeCliente.isNotEmpty)
-        ? 'Bem-vindo, $nomeCliente'
+        ? 'Bem-vindo, $nomeCliente${_appVersion != null ? ' - v$_appVersion' : ''}'
         : 'Escolha um servidor';
 
     return Scaffold(
