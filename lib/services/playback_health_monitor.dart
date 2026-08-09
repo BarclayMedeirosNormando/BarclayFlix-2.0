@@ -77,6 +77,22 @@ class PlaybackHealthMonitor {
   /// sinal esperando — quanto antes detectar, melhor.
   static const Duration _progressStallTimeout = Duration(seconds: 10);
 
+  /// `player.stream.position` emite um tick a cada avanço real de posição
+  /// (frequência interna do media_kit, tipicamente bem sub-segundo) — bem
+  /// mais frequente do que o watchdog precisa para cumprir seu papel (o
+  /// prazo de detecção é [_progressStallTimeout], 10s). Processar TODO tick
+  /// (cancelar+rearmar [_progressStallTimer], mais os debugPrint de
+  /// diagnóstico) é overhead constante durante toda a reprodução saudável,
+  /// não só quando algo dá errado. Só o primeiro tick de cada janela de
+  /// [_positionCheckThrottle] chega a rearmar o timer/logar — os demais
+  /// dentro da mesma janela são ignorados antes de qualquer trabalho (ver
+  /// [_positionCheckCooldown]/[_onPositionChanged]). Isso NÃO muda quando um
+  /// stall é considerado detectado (ainda [_progressStallTimeout] sem
+  /// processar tick nenhum), só adia em até [_positionCheckThrottle] o
+  /// instante em que o timer é rearmado a partir de um tick real — folga
+  /// desprezível perto dos 10s de prazo.
+  static const Duration _positionCheckThrottle = Duration(milliseconds: 1750);
+
   StreamSubscription<String>? _errorSub;
   StreamSubscription<bool>? _bufferingSub;
   StreamSubscription<Duration>? _positionSub;
@@ -88,6 +104,14 @@ class PlaybackHealthMonitor {
   /// primeiro tick, para não tratar esse primeiro tick como "posição
   /// parada" por falta de uma posição anterior pra comparar.
   Duration? _lastKnownPosition;
+
+  /// Janela de "cooldown" do throttle de [_onPositionChanged] — não-nulo
+  /// enquanto um tick recente já foi processado há menos de
+  /// [_positionCheckThrottle]; zerado por si mesmo quando dispara. Um
+  /// `Timer` (em vez de comparar `DateTime.now()`) de propósito: precisa
+  /// respeitar o relógio virtual do `fake_async` usado pela suíte de testes
+  /// deste arquivo (que avança tempo via `Timer`, não via wall-clock real).
+  Timer? _positionCheckCooldown;
 
   bool _disposed = false;
   bool _failedDefinitively = false;
@@ -163,9 +187,18 @@ class PlaybackHealthMonitor {
   /// false` quando o player fica sem dados de rede, o que suprimiria a
   /// detecção justamente no cenário que este watchdog existe pra pegar).
   void _onPositionChanged(Duration position) {
-    debugPrint('[HealthMonitor] position tick: $position (última: $_lastKnownPosition)');
     if (_disposed || _failedDefinitively) return;
 
+    // Throttle (item 3 de performance): descarta ticks demais frequentes
+    // antes de qualquer trabalho (log, comparar/atualizar
+    // [_lastKnownPosition], cancelar/rearmar timer) — ver
+    // [_positionCheckThrottle]. Mantém a mesma ordem de antes (log compara
+    // com o [_lastKnownPosition] ANTERIOR antes de sobrescrevê-lo) pelos
+    // ticks que passam do throttle.
+    if (_positionCheckCooldown != null) return;
+    _positionCheckCooldown = Timer(_positionCheckThrottle, () => _positionCheckCooldown = null);
+
+    debugPrint('[HealthMonitor] position tick: $position (última: $_lastKnownPosition)');
     _lastKnownPosition = position;
     _cancelProgressStallTimer('novo tick de posição');
 
@@ -301,6 +334,8 @@ class PlaybackHealthMonitor {
     _stallTimer?.cancel();
     _stallTimer = null;
     _cancelProgressStallTimer('reset()');
+    _positionCheckCooldown?.cancel();
+    _positionCheckCooldown = null;
     _lastKnownPosition = null;
     _currentUrlIndex = 0;
     _retryCount = 0;
@@ -314,6 +349,7 @@ class PlaybackHealthMonitor {
     _retryTimer?.cancel();
     _stallTimer?.cancel();
     _cancelProgressStallTimer('dispose()');
+    _positionCheckCooldown?.cancel();
     unawaited(_errorSub?.cancel());
     unawaited(_bufferingSub?.cancel());
     unawaited(_positionSub?.cancel());
