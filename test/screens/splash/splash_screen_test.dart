@@ -35,6 +35,20 @@ Future<http.Response> Function(http.Request) _buildHandler({
   String? errorMessageForDevice,
 }) {
   return (request) async {
+    // Checa a rota Xtream PRIMEIRO, por um sufixo de path especifico
+    // (`/player_api.php`) -- nunca por `AppConstants.deviceAuthUrl`, que em
+    // `flutter test` (sem `--dart-define=APPS_SCRIPT_URL=...`) resolve pra
+    // string vazia, e `startsWith('')` bateria com QUALQUER URL, inclusive
+    // a da Xtream (mesma correção em profiles_provider_test.dart e
+    // activation_screen_test.dart). Em produção nunca acontece: as duas
+    // URLs são hosts sempre distintos.
+    if (request.url.path.endsWith(AppConstants.xtreamPlayerApiPath)) {
+      return _json({
+        'user_info': {'auth': 1, 'status': 'Active'},
+        'server_info': {'url': 'servidor-teste.com', 'port': '8080'},
+      });
+    }
+
     if (request.url.toString().startsWith(AppConstants.deviceAuthUrl)) {
       if (errorCodeForDevice != null) {
         return _json({
@@ -49,13 +63,6 @@ Future<http.Response> Function(http.Request) _buildHandler({
         'servidores': [
           {'nome': 'Meu Servidor', 'dns': _testDns, 'username': _testUser, 'password': _testPass},
         ],
-      });
-    }
-
-    if (request.url.path.endsWith(AppConstants.xtreamPlayerApiPath)) {
-      return _json({
-        'user_info': {'auth': 1, 'status': 'Active'},
-        'server_info': {'url': 'servidor-teste.com', 'port': '8080'},
       });
     }
 
