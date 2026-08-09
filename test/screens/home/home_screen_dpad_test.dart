@@ -36,6 +36,9 @@ const _testPass = 'senha_teste';
 ///   colunas real do grid (AppCardSizes.posterGridDelegate, ~6 colunas na
 ///   largura de teste de 900px) pra garantir pelo menos uma segunda linha
 ///   completa mesmo que a densidade do grid mude de novo no futuro.
+/// - Séries: 1 categoria ("Dramas"), com 2 séries ("Série A", "Série B") —
+///   só o bastante pra testar a categoria "Todos" e a busca local (ver
+///   grupo "Séries: categoria 'Todos' e busca inline local" abaixo).
 Future<http.Response> _xtreamHandler(http.Request request) async {
   final action = request.url.queryParameters['action'];
   final categoryId = request.url.queryParameters['category_id'];
@@ -60,6 +63,11 @@ Future<http.Response> _xtreamHandler(http.Request request) async {
       return _json([
         {'stream_id': 101, 'name': 'Canal A ($categoryId)', 'category_id': categoryId},
         {'stream_id': 102, 'name': 'Canal B ($categoryId)', 'category_id': categoryId},
+        // Único canal com tag de qualidade no nome deste dataset -- usado
+        // pelo grupo "Live TV: Todos/busca/card de qualidade" abaixo pra
+        // provar que só ELE vira card com QualityBadge, os outros dois
+        // continuam na lista simples (ver home_screen.dart._LiveStreamsPanel).
+        {'stream_id': 103, 'name': 'Canal C ($categoryId) FHD', 'category_id': categoryId},
       ]);
     case 'get_vod_categories':
       return _json([
@@ -78,17 +86,43 @@ Future<http.Response> _xtreamHandler(http.Request request) async {
           },
       ]);
     case 'get_series_categories':
+      // "Dramas" (não "Séries") de propósito -- o rótulo da ABA já é
+      // "Séries" (ver TabBar em home_screen.dart), então uma categoria com
+      // o mesmo nome tornaria `find.text('Séries')` ambíguo (aba x chip de
+      // categoria) nos testes abaixo.
       return _json([
-        {'category_id': '20', 'category_name': 'Séries', 'parent_id': 0},
+        {'category_id': '20', 'category_name': 'Dramas', 'parent_id': 0},
       ]);
     case 'get_series':
-      return _json(const []);
+      return _json([
+        {'series_id': 1, 'name': 'Série A', 'category_id': categoryId, 'rating': '0'},
+        {'series_id': 2, 'name': 'Série B', 'category_id': categoryId, 'rating': '0'},
+      ]);
     default:
       return http.Response('Not Found', 404);
   }
 }
 
 http.Response _json(Object body) => http.Response(jsonEncode(body), 200);
+
+/// Substituto de `tester.pumpAndSettle()` usado NESTE ARQUIVO INTEIRO desde
+/// o ajuste de UI que seleciona a categoria "Todos" por padrão na Live TV
+/// (ver ContentProvider._loadLiveCategories): a partir dele, HomeScreen
+/// sempre tem pelo menos um canal real visível assim que monta -- e o
+/// badge "ao vivo" de cada canal da lista (_LivePulseBadge) anima em loop
+/// infinito (`repeat(reverse: true)`), que nunca converge sozinho.
+/// `pumpAndSettle()` ficaria esperando pra sempre a partir daí (mesmo
+/// problema já documentado nos testes de "Preservação de foco"/PlayerScreen
+/// mais abaixo, agora válido pro arquivo inteiro, já que a TabBarView
+/// mantém a aba Live TV viva -- e a animação rodando -- mesmo com outra aba
+/// em primeiro plano). Uns poucos pumps com duração explícita bastam pra
+/// deixar requisições (MockClient) e transições reais (diálogos, troca de
+/// aba) assentarem, sem depender de uma animação indeterminada convergir.
+Future<void> pumpSettled(WidgetTester tester) async {
+  await tester.pump();
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 1000));
+}
 
 /// Monta a HomeScreen com um [AuthProvider] já autenticado (via o seam
 /// `apiService` — ver AuthProvider) apontando pro [_xtreamHandler] acima, e
@@ -166,7 +200,7 @@ Future<StorageService> pumpHomeScreen(
     ),
   );
 
-  await tester.pumpAndSettle();
+  await pumpSettled(tester);
   return resolvedStorageService;
 }
 
@@ -174,11 +208,11 @@ Future<StorageService> pumpHomeScreen(
 /// filmes carregado e pronto pra navegação.
 Future<void> selectVodCategory(WidgetTester tester, String categoryId) async {
   await tester.tap(find.text('Filmes'));
-  await tester.pumpAndSettle();
+  await pumpSettled(tester);
 
   final categoryName = categoryId == '10' ? 'Lançamentos' : 'Clássicos';
   await tester.tap(find.text(categoryName));
-  await tester.pumpAndSettle();
+  await pumpSettled(tester);
 }
 
 /// [Focus.of] busca o FocusNode do ANCESTRAL mais próximo a partir do
@@ -193,6 +227,33 @@ bool isFocused(WidgetTester tester, Finder finder) {
 
 void focusItem(WidgetTester tester, Finder finder) {
   Focus.of(tester.element(finder)).requestFocus();
+}
+
+/// Restringe [matching] à aba de conteúdo [tabName] ("live"/"vod"/"series",
+/// ver `HomeScreen._ContentTabView`'s `ValueKey('${type.name}_content_tab')`)
+/// — necessário pra finders "genéricos" (`find.byIcon(Icons.search)`,
+/// `find.text('Todos')`, `find.byType(TextField)`...) que hoje aparecem em
+/// TRÊS abas ao mesmo tempo: a `TabBarView` não descarta uma aba já visitada
+/// ao trocar pra outra (mesma razão documentada em [pumpSettled] pro badge
+/// "ao vivo" da Live TV continuar animando fora de tela) -- sem esse escopo,
+/// visitar mais de uma aba na mesma sessão de teste faria esses finders
+/// encontrarem mais de um widget e o teste falhar por ambiguidade, não por
+/// um bug de verdade.
+Finder inTab(String tabName, Finder matching) {
+  return find.descendant(
+    of: find.byKey(ValueKey('${tabName}_content_tab')),
+    matching: matching,
+  );
+}
+
+/// `find.text(data)` também combina com o conteúdo digitado num
+/// `TextField`/`EditableText` (ver `CommonFinders.text`) -- então buscar
+/// exatamente pelo texto que acabou de ser digitado no campo de busca (ex:
+/// digitar "Filme 3" e depois checar `find.text('Filme 3')`) encontra o
+/// próprio campo além do item de verdade. Este finder restringe a um
+/// widget `Text` propriamente dito, ignorando o campo de busca.
+Finder textWidget(String data) {
+  return find.byWidgetPredicate((widget) => widget is Text && widget.data == data);
 }
 
 /// Confirma que ALGUM nó de foco já está ativo assim que a tela abre, SEM
@@ -230,7 +291,15 @@ void main() {
       // home_screen.dart) — sem ele, nenhuma seta moveria o foco pra lugar
       // nenhum a partir daqui (achado empírico: busca DIRECIONAL, ao
       // contrário de `nextFocus`/Tab, não atravessa a fronteira de um nó
-      // `skipTraversal` sozinha).
+      // `skipTraversal` sozinha). "Todos" (categoria sintética, ver
+      // ContentProvider.allLiveCategoriesId) é sempre a PRIMEIRA opção em
+      // Live TV -- por isso é ela, não "Esportes", quem recebe esse
+      // autofoco inicial.
+      expect(isFocused(tester, find.text('Todos')), isTrue);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+
       expect(isFocused(tester, find.text('Esportes')), isTrue);
 
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
@@ -354,13 +423,7 @@ void main() {
       expect(find.text('Canal A (2)'), findsNothing);
 
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-      // Sem pumpAndSettle: os canais de Live TV agora têm um badge "ao
-      // vivo" com animação em loop (Bloco 3) que nunca converge — mesma
-      // razão documentada nos testes da PlayerScreen mais abaixo neste
-      // arquivo (buffering indeterminado). Uns poucos pumps bastam pra
-      // deixar a requisição (MockClient) e o rebuild resultante assentarem.
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
+      await pumpSettled(tester);
 
       // Mesmo efeito de tocar no ListTile: a categoria "2" (Notícias) foi
       // selecionada e seus canais carregados — prova que o Enter chamou o
@@ -385,7 +448,7 @@ void main() {
       expect(isFocused(tester, find.text('Filmes')), isTrue);
 
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-      await tester.pumpAndSettle();
+      await pumpSettled(tester);
 
       expect(find.text('Lançamentos'), findsOneWidget);
     });
@@ -398,14 +461,14 @@ void main() {
       expect(find.text('Sair do app?'), findsNothing);
 
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-      await tester.pumpAndSettle();
+      await pumpSettled(tester);
 
       expect(find.text('Sair do app?'), findsOneWidget);
       expect(find.text('Tem certeza que deseja sair do BarclayFlix 2.0?'), findsOneWidget);
 
       // Fecha o diálogo tocando "Cancelar" pra não deixar estado pendente.
       await tester.tap(find.text('Cancelar'));
-      await tester.pumpAndSettle();
+      await pumpSettled(tester);
       expect(find.text('Sair do app?'), findsNothing);
     });
   });
@@ -498,7 +561,7 @@ void main() {
       expect(find.text('Continuar'), findsOneWidget);
 
       await tester.tap(find.text('Continuar'));
-      await tester.pumpAndSettle();
+      await pumpSettled(tester);
 
       expect(find.textContaining('Nada assistido ainda'), findsOneWidget);
     });
@@ -510,7 +573,7 @@ void main() {
       );
 
       await tester.tap(find.text('Continuar'));
-      await tester.pumpAndSettle();
+      await pumpSettled(tester);
 
       expect(find.text('Filme Assistido'), findsOneWidget);
     });
@@ -543,11 +606,11 @@ void main() {
       expect(await storageService.getSavedProfiles(), hasLength(1));
 
       await tester.tap(find.widgetWithIcon(IconButton, Icons.restart_alt));
-      await tester.pumpAndSettle();
+      await pumpSettled(tester);
 
       expect(find.text('Reativar dispositivo?'), findsOneWidget);
       await tester.tap(find.widgetWithText(TextButton, 'Reativar'));
-      await tester.pumpAndSettle();
+      await pumpSettled(tester);
 
       expect(find.byType(ActivationScreen), findsOneWidget);
       expect(find.byType(HomeScreen), findsNothing);
@@ -572,10 +635,10 @@ void main() {
       await pumpHomeScreen(tester, storageService: storageService);
 
       await tester.tap(find.widgetWithIcon(IconButton, Icons.restart_alt));
-      await tester.pumpAndSettle();
+      await pumpSettled(tester);
 
       await tester.tap(find.widgetWithText(TextButton, 'Cancelar'));
-      await tester.pumpAndSettle();
+      await pumpSettled(tester);
 
       expect(find.byType(HomeScreen), findsOneWidget);
       expect(await storageService.getSavedProfiles(), hasLength(1));
@@ -616,7 +679,7 @@ void main() {
         await tester.pump();
 
         await tester.tap(find.widgetWithIcon(IconButton, Icons.swap_horiz));
-        await tester.pumpAndSettle();
+        await pumpSettled(tester);
 
         expect(find.byType(ServerSelectionScreen), findsOneWidget);
         expect(find.byType(ActivationScreen), findsNothing, reason: 'nunca deve pedir ativação de novo');
@@ -647,10 +710,10 @@ void main() {
       await tester.pump();
 
       await tester.tap(find.widgetWithIcon(IconButton, Icons.swap_horiz));
-      await tester.pumpAndSettle();
+      await pumpSettled(tester);
 
       await tester.tap(find.text('P2BRAS'));
-      await tester.pumpAndSettle();
+      await pumpSettled(tester);
 
       expect(find.byType(HomeScreen), findsOneWidget);
       expect(find.byType(ServerSelectionScreen), findsNothing);
@@ -660,6 +723,279 @@ void main() {
       expect(updated.single.id, 'p1');
       expect(updated.single.dns, 'http://p2bras.example:8080');
       expect(updated.single.xtreamUsername, 'u_p2bras');
+    });
+  });
+
+  group('Live TV: categoria "Todos" e busca inline local', () {
+    testWidgets(
+      '"Todos" já vem selecionada ao abrir a tela: mostra os canais de TODAS as categorias, sem nenhum toque',
+      (tester) async {
+        await pumpHomeScreen(tester);
+
+        // Sem tocar em nenhuma categoria -- "Todos" (categoria sintética,
+        // primeira da lista, ver ContentProvider.allLiveCategoriesId) já foi
+        // selecionada automaticamente e os canais já apareceram.
+        expect(find.text('Todos'), findsOneWidget);
+        expect(find.textContaining('Canal A'), findsOneWidget);
+        expect(find.textContaining('Canal B'), findsOneWidget);
+        expect(find.textContaining('Canal C'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'canal com tag de qualidade no nome vira card com QualityBadge; os demais continuam na lista',
+      (tester) async {
+        await pumpHomeScreen(tester);
+
+        // "Canal C (...) FHD" é o único com tag reconhecida no dataset (ver
+        // _xtreamHandler) -- só ele ganha o selo "FHD".
+        expect(find.text('FHD'), findsOneWidget);
+        expect(find.textContaining('Canal C'), findsOneWidget);
+
+        // Canal A/B não têm tag no nome -- nenhum selo de qualidade pra eles.
+        expect(find.text('HD'), findsNothing);
+        expect(find.text('SD'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'lupa expande um campo de busca inline (nunca tela nova/overlay) e filtra os canais localmente',
+      (tester) async {
+        await pumpHomeScreen(tester);
+
+        expect(find.byIcon(Icons.search), findsOneWidget);
+        expect(find.byType(TextField), findsNothing);
+
+        await tester.tap(find.byIcon(Icons.search));
+        await tester.pump();
+
+        // Campo aberto ali mesmo -- nunca uma rota nova nem um overlay.
+        expect(find.byType(TextField), findsOneWidget);
+        expect(find.byType(HomeScreen), findsOneWidget);
+        expect(find.byIcon(Icons.close), findsOneWidget);
+
+        await tester.enterText(find.byType(TextField), 'FHD');
+        await tester.pump();
+
+        // Filtro local, em tempo real (onChanged, sem debounce): só "Canal
+        // C" (com FHD no nome) sobra -- sem NENHUMA chamada de rede nova.
+        expect(find.textContaining('Canal C'), findsOneWidget);
+        expect(find.textContaining('Canal A'), findsNothing);
+        expect(find.textContaining('Canal B'), findsNothing);
+
+        await tester.tap(find.byIcon(Icons.close));
+        await tester.pump();
+
+        // Fechar a busca limpa o filtro e volta a mostrar tudo.
+        expect(find.byType(TextField), findsNothing);
+        expect(find.textContaining('Canal A'), findsOneWidget);
+        expect(find.textContaining('Canal B'), findsOneWidget);
+        expect(find.textContaining('Canal C'), findsOneWidget);
+      },
+    );
+
+    testWidgets('busca sem nenhum resultado mostra estado vazio próprio, sem travar a tela', (tester) async {
+      await pumpHomeScreen(tester);
+
+      await tester.tap(find.byIcon(Icons.search));
+      await tester.pump();
+
+      await tester.enterText(find.byType(TextField), 'canal que não existe');
+      await tester.pump();
+
+      expect(find.textContaining('Nenhum canal encontrado'), findsOneWidget);
+      expect(find.textContaining('Canal A'), findsNothing);
+    });
+
+    testWidgets('a lupa é alcançável e ativável por D-Pad (Enter), igual um toque', (tester) async {
+      await pumpHomeScreen(tester);
+
+      focusItem(tester, find.byIcon(Icons.search));
+      await tester.pump();
+      expect(isFocused(tester, find.byIcon(Icons.search)), isTrue);
+
+      expect(find.byType(TextField), findsNothing);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+
+      expect(find.byType(TextField), findsOneWidget);
+    });
+  });
+
+  group('Filmes (VOD): categoria "Todos" e busca inline local', () {
+    testWidgets(
+      '"Todos" já vem selecionada ao abrir a aba: mostra os filmes sem nenhum toque em categoria',
+      (tester) async {
+        await pumpHomeScreen(tester);
+
+        await tester.tap(find.text('Filmes'));
+        await pumpSettled(tester);
+
+        // Sem tocar em "Lançamentos"/"Clássicos" -- "Todos" (primeira
+        // opção, ver ContentProvider.allCategoriesId) já foi selecionada
+        // automaticamente e os filmes já apareceram.
+        expect(inTab('vod', find.text('Todos')), findsOneWidget);
+        expect(find.text('Filme 1'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'lupa expande um campo de busca inline (nunca tela nova/overlay) e filtra os filmes localmente',
+      (tester) async {
+        await pumpHomeScreen(tester);
+
+        await tester.tap(find.text('Filmes'));
+        await pumpSettled(tester);
+
+        expect(inTab('vod', find.byIcon(Icons.search)), findsOneWidget);
+        expect(inTab('vod', find.byType(TextField)), findsNothing);
+
+        await tester.tap(inTab('vod', find.byIcon(Icons.search)));
+        await tester.pump();
+
+        // Campo aberto ali mesmo -- nunca uma rota nova nem um overlay.
+        expect(inTab('vod', find.byType(TextField)), findsOneWidget);
+        expect(find.byType(HomeScreen), findsOneWidget);
+        expect(inTab('vod', find.byIcon(Icons.close)), findsOneWidget);
+
+        await tester.enterText(inTab('vod', find.byType(TextField)), 'Filme 3');
+        await tester.pump();
+
+        // Filtro local, em tempo real (onChanged, sem debounce): só "Filme
+        // 3" sobra -- sem NENHUMA chamada de rede nova.
+        expect(textWidget('Filme 3'), findsOneWidget);
+        expect(find.text('Filme 1'), findsNothing);
+
+        await tester.tap(inTab('vod', find.byIcon(Icons.close)));
+        await tester.pump();
+
+        // Fechar a busca limpa o filtro e volta a mostrar tudo.
+        expect(inTab('vod', find.byType(TextField)), findsNothing);
+        expect(find.text('Filme 1'), findsOneWidget);
+        expect(find.text('Filme 3'), findsOneWidget);
+      },
+    );
+
+    testWidgets('busca sem nenhum resultado mostra estado vazio próprio, sem travar a tela', (tester) async {
+      await pumpHomeScreen(tester);
+
+      await tester.tap(find.text('Filmes'));
+      await pumpSettled(tester);
+
+      await tester.tap(inTab('vod', find.byIcon(Icons.search)));
+      await tester.pump();
+
+      await tester.enterText(inTab('vod', find.byType(TextField)), 'filme que não existe');
+      await tester.pump();
+
+      expect(find.textContaining('Nenhum filme encontrado'), findsOneWidget);
+      expect(find.text('Filme 1'), findsNothing);
+    });
+
+    testWidgets('a lupa é alcançável e ativável por D-Pad (Enter), igual um toque', (tester) async {
+      await pumpHomeScreen(tester);
+
+      await tester.tap(find.text('Filmes'));
+      await pumpSettled(tester);
+
+      focusItem(tester, inTab('vod', find.byIcon(Icons.search)));
+      await tester.pump();
+      expect(isFocused(tester, inTab('vod', find.byIcon(Icons.search))), isTrue);
+
+      expect(inTab('vod', find.byType(TextField)), findsNothing);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+
+      expect(inTab('vod', find.byType(TextField)), findsOneWidget);
+    });
+
+    testWidgets('nunca mostra selo de qualidade (FHD/HD/SD) -- exclusivo de Live TV', (tester) async {
+      await pumpHomeScreen(tester);
+
+      await tester.tap(find.text('Filmes'));
+      await pumpSettled(tester);
+
+      expect(inTab('vod', find.textContaining('FHD')), findsNothing);
+      expect(inTab('vod', find.textContaining('HD')), findsNothing);
+      expect(inTab('vod', find.textContaining('SD')), findsNothing);
+    });
+  });
+
+  group('Séries: categoria "Todos" e busca inline local', () {
+    testWidgets(
+      '"Todos" já vem selecionada ao abrir a aba: mostra as séries sem nenhum toque em categoria',
+      (tester) async {
+        await pumpHomeScreen(tester);
+
+        await tester.tap(find.widgetWithText(Tab, 'Séries'));
+        await pumpSettled(tester);
+
+        expect(inTab('series', find.text('Todos')), findsOneWidget);
+        expect(find.text('Série A'), findsOneWidget);
+        expect(find.text('Série B'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'lupa expande um campo de busca inline (nunca tela nova/overlay) e filtra as séries localmente',
+      (tester) async {
+        await pumpHomeScreen(tester);
+
+        await tester.tap(find.widgetWithText(Tab, 'Séries'));
+        await pumpSettled(tester);
+
+        expect(inTab('series', find.byIcon(Icons.search)), findsOneWidget);
+        expect(inTab('series', find.byType(TextField)), findsNothing);
+
+        await tester.tap(inTab('series', find.byIcon(Icons.search)));
+        await tester.pump();
+
+        expect(inTab('series', find.byType(TextField)), findsOneWidget);
+        expect(inTab('series', find.byIcon(Icons.close)), findsOneWidget);
+
+        await tester.enterText(inTab('series', find.byType(TextField)), 'Série A');
+        await tester.pump();
+
+        expect(textWidget('Série A'), findsOneWidget);
+        expect(find.text('Série B'), findsNothing);
+
+        await tester.tap(inTab('series', find.byIcon(Icons.close)));
+        await tester.pump();
+
+        expect(inTab('series', find.byType(TextField)), findsNothing);
+        expect(find.text('Série A'), findsOneWidget);
+        expect(find.text('Série B'), findsOneWidget);
+      },
+    );
+
+    testWidgets('busca sem nenhum resultado mostra estado vazio próprio, sem travar a tela', (tester) async {
+      await pumpHomeScreen(tester);
+
+      await tester.tap(find.widgetWithText(Tab, 'Séries'));
+      await pumpSettled(tester);
+
+      await tester.tap(inTab('series', find.byIcon(Icons.search)));
+      await tester.pump();
+
+      await tester.enterText(inTab('series', find.byType(TextField)), 'série que não existe');
+      await tester.pump();
+
+      expect(find.textContaining('Nenhuma série encontrada'), findsOneWidget);
+      expect(find.text('Série A'), findsNothing);
+    });
+
+    testWidgets('categorias de Séries são independentes das de VOD/Live TV (nunca misturadas)', (tester) async {
+      await pumpHomeScreen(tester);
+
+      await tester.tap(find.widgetWithText(Tab, 'Séries'));
+      await pumpSettled(tester);
+
+      // "Dramas" é a única categoria REAL vinda da API pra Séries -- as
+      // categorias de VOD ("Lançamentos"/"Clássicos") e Live TV
+      // ("Esportes"/"Notícias"/"Kids") nunca aparecem aqui.
+      expect(inTab('series', find.text('Dramas')), findsOneWidget);
+      expect(inTab('series', find.text('Lançamentos')), findsNothing);
+      expect(inTab('series', find.text('Esportes')), findsNothing);
     });
   });
 }
