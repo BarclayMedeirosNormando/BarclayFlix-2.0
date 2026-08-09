@@ -1086,7 +1086,28 @@ void _openSeriesDetails(BuildContext context, Series series) {
   });
 }
 
+/// Guarda o instante do último toque efetivado em [_playLiveChannel] —
+/// protege contra double-tap (touch) ou Enter repetido rápido no D-Pad
+/// empilhando duas telas de player (duas chamadas a `Navigator.push` para
+/// o mesmo canal ou dois canais em sequência) antes da transição de tela
+/// completar. Variável de módulo (não campo de State) porque
+/// `_playLiveChannel` é uma função livre chamada a partir de `onTap` em
+/// vários pontos da árvore (grid de cards e lista simples, ver
+/// `_LiveStreamsPanel`), sem um `State` único que a possua.
+DateTime? _lastLiveChannelTapAt;
+
+/// Janela mínima entre duas navegações efetivas para o player a partir da
+/// lista de Live TV — toques dentro desta janela são ignorados.
+const _liveChannelTapDebounce = Duration(milliseconds: 350);
+
 void _playLiveChannel(BuildContext context, LiveStream channel) {
+  final now = DateTime.now();
+  if (_lastLiveChannelTapAt != null &&
+      now.difference(_lastLiveChannelTapAt!) < _liveChannelTapDebounce) {
+    return;
+  }
+  _lastLiveChannelTapAt = now;
+
   final apiService = context.read<AuthProvider>().apiService;
   if (apiService == null) return;
 
