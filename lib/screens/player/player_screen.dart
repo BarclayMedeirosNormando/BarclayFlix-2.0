@@ -427,6 +427,13 @@ class _PlayerScreenBodyState extends State<_PlayerScreenBody> {
                   fit: StackFit.expand,
                   children: [
                     const _VideoSurface(),
+                    // Ver _FallbackTransitionScrim: suaviza a troca de
+                    // stream que o _healthMonitor faz sozinho (retry na
+                    // mesma URL ou troca de qualidade na cadeia de
+                    // fallback) — sem isso, o corte de texture nativa do
+                    // media_kit ao reabrir a URL aparecia como flash/tela
+                    // preta abrupta por baixo do spinner de buffering.
+                    _FallbackTransitionScrim(active: _healthPhase == HealthMonitorPhase.retrying),
                     const _BufferingIndicator(),
                     _ErrorOverlay(
                       retryFocusNode: _retryFocusNode,
@@ -509,6 +516,43 @@ class _VideoSurface extends StatelessWidget {
         controller: controller,
         controls: null,
         fill: Colors.black,
+      ),
+    );
+  }
+}
+
+/// Scrim semi-transparente que cobre o [_VideoSurface] enquanto o
+/// [PlaybackHealthMonitor] está tentando se recuperar sozinho (retry com
+/// backoff na mesma URL ou troca de qualidade na cadeia de fallback, ver
+/// [HealthMonitorPhase.retrying]).
+///
+/// O [Video] em si nunca é removido/recriado durante essa transição — só
+/// `player.open()` é chamado de novo em cima do mesmo `Player`/
+/// `VideoController` (ver [PlaybackHealthMonitor._handleFailure] e
+/// [PlayerProvider.playUrl]) — mas a troca de textura nativa do media_kit
+/// nesse meio-tempo ainda pode aparecer como um flash/frame em branco por
+/// baixo do spinner de buffering. Este scrim cobre esse instante com um
+/// crossfade curto em vez do corte abrupto, só removido quando o monitor
+/// sai de [HealthMonitorPhase.retrying] (sucesso, falha definitiva ou
+/// reset — nunca antes do novo stream já estar de fato tentando tocar).
+///
+/// `AnimatedContainer` (não `AnimatedOpacity`) de propósito: a barra de
+/// controles já usa um `AnimatedOpacity` pra esconder/mostrar (ver
+/// `_PlayerScreenBodyState.build`), e os testes de D-Pad existentes
+/// localizam esse widget por tipo (`find.byType(AnimatedOpacity)`) — um
+/// segundo `AnimatedOpacity` na árvore quebraria essa busca, mesmo motivo
+/// documentado em [_SeekFeedbackOverlay].
+class _FallbackTransitionScrim extends StatelessWidget {
+  final bool active;
+
+  const _FallbackTransitionScrim({required this.active});
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 250),
+        color: active ? Colors.black54 : Colors.transparent,
       ),
     );
   }
