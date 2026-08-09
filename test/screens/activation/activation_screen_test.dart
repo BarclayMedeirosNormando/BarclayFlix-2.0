@@ -185,15 +185,13 @@ void main() {
 
   testWidgets('sucesso com um servidor: valida a Xtream e navega direto pra HomeScreen', (tester) async {
     final client = MockClient((request) async {
-      if (request.url.toString().startsWith(AppConstants.deviceAuthUrl)) {
-        return _json({
-          'status': 'ok',
-          'nomeCliente': 'Cliente Teste',
-          'servidores': [
-            {'nome': 'Servidor Único', 'dns': _testDns, 'username': _testUser, 'password': _testPass},
-          ],
-        });
-      }
+      // Checa a rota Xtream PRIMEIRO, por um sufixo de path especifico
+      // (`/player_api.php`) -- nunca por `AppConstants.deviceAuthUrl`, que
+      // em `flutter test` (sem `--dart-define=APPS_SCRIPT_URL=...`) resolve
+      // pra string vazia, e `startsWith('')` bateria com QUALQUER URL,
+      // inclusive a da Xtream (ver mesma correção em
+      // profiles_provider_test.dart). Em produção nunca acontece: as duas
+      // URLs são hosts sempre distintos.
       if (request.url.path.endsWith(AppConstants.xtreamPlayerApiPath)) {
         final action = request.url.queryParameters['action'];
         if (action == null) {
@@ -203,6 +201,15 @@ void main() {
           });
         }
         return _json(const []);
+      }
+      if (request.url.toString().startsWith(AppConstants.deviceAuthUrl)) {
+        return _json({
+          'status': 'ok',
+          'nomeCliente': 'Cliente Teste',
+          'servidores': [
+            {'nome': 'Servidor Único', 'dns': _testDns, 'username': _testUser, 'password': _testPass},
+          ],
+        });
       }
       return http.Response('Not Found', 404);
     });
