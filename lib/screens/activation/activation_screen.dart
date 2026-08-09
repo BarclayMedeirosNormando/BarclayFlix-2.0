@@ -127,7 +127,10 @@ class _ActivationScreenState extends State<ActivationScreen> {
     final profilesProvider = context.read<ProfilesProvider>();
 
     if (result.servidores.length == 1) {
-      final success = await profilesProvider.chooseServer(server: result.servidores.single);
+      final success = await profilesProvider.chooseServer(
+        server: result.servidores.single,
+        nomeCliente: result.nomeCliente,
+      );
       if (!mounted) return;
 
       if (success) {
@@ -150,7 +153,12 @@ class _ActivationScreenState extends State<ActivationScreen> {
     }
 
     Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => ServerSelectionScreen(servers: result.servidores)),
+      MaterialPageRoute(
+        builder: (_) => ServerSelectionScreen(
+          servers: result.servidores,
+          nomeCliente: result.nomeCliente,
+        ),
+      ),
     );
   }
 

@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../../core/navigation/fade_slide_route.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/category_icons.dart';
+import '../../core/utils/channel_quality.dart';
 import '../../data/models/watch_progress.dart';
 import '../../data/models/xtream_models.dart';
 import '../../providers/auth_provider.dart';
@@ -13,8 +14,10 @@ import '../../providers/content_provider.dart';
 import '../../providers/continue_watching_provider.dart';
 import '../../providers/profiles_provider.dart';
 import '../../services/stream_url_builder.dart';
+import '../../widgets/category_filter_header.dart';
 import '../../widgets/dpad_focus_highlight.dart';
 import '../../widgets/network_image_with_fallback.dart';
+import '../../widgets/quality_badge.dart';
 import '../../widgets/skeleton_loader.dart';
 import '../../widgets/state_illustration.dart';
 import '../player/player_screen.dart';
@@ -263,6 +266,7 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
         builder: (_) => ServerSelectionScreen(
           servers: result.servidores,
           existingProfileId: profile.id,
+          nomeCliente: result.nomeCliente,
         ),
       ),
     );
@@ -360,11 +364,23 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
             skipTraversal: true,
             child: TabBarView(
               controller: _tabController,
-              children: const [
-                _ContentTabView(type: ContentType.live),
-                _ContentTabView(type: ContentType.vod),
-                _ContentTabView(type: ContentType.series),
-                _ContinueWatchingTab(),
+              children: [
+                _ContentTabView(
+                  type: ContentType.live,
+                  searchHintText: 'Buscar canal...',
+                  streamsPanelBuilder: (query) => _LiveStreamsPanel(searchQuery: query),
+                ),
+                _ContentTabView(
+                  type: ContentType.vod,
+                  searchHintText: 'Buscar filme...',
+                  streamsPanelBuilder: (query) => _VodGrid(searchQuery: query),
+                ),
+                _ContentTabView(
+                  type: ContentType.series,
+                  searchHintText: 'Buscar série...',
+                  streamsPanelBuilder: (query) => _SeriesGrid(searchQuery: query),
+                ),
+                const _ContinueWatchingTab(),
               ],
             ),
           ),
@@ -375,14 +391,59 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
 }
 
 /// Uma aba de conteúdo completa: seletor de categorias (sidebar ou chips,
-/// conforme a largura disponível) + grid/lista de streams da categoria
-/// selecionada. Envolvida em [FocusTraversalGroup] para já deixar a
-/// navegação por teclado/D-Pad estruturada (a lógica completa de D-Pad é do
-/// próximo módulo).
-class _ContentTabView extends StatelessWidget {
+/// conforme a largura disponível, com a lupa de busca local — ver
+/// [CategoryFilterHeader]) + grid/lista de streams da categoria
+/// selecionada. Envolvida em [FocusTraversalGroup] para deixar a navegação
+/// por teclado/D-Pad estruturada.
+///
+/// Genérico pras 3 abas (Live TV/VOD/Séries) de propósito — evita 3
+/// implementações quase idênticas de "sidebar/chips + lupa": só
+/// [streamsPanelBuilder] (o grid/lista específico de cada uma) e
+/// [searchHintText] variam por [type].
+class _ContentTabView extends StatefulWidget {
   final ContentType type;
+  final String searchHintText;
+  final Widget Function(String searchQuery) streamsPanelBuilder;
 
-  const _ContentTabView({required this.type});
+  const _ContentTabView({
+    required this.type,
+    required this.searchHintText,
+    required this.streamsPanelBuilder,
+  });
+
+  @override
+  State<_ContentTabView> createState() => _ContentTabViewState();
+}
+
+class _ContentTabViewState extends State<_ContentTabView> {
+  final TextEditingController _searchController = TextEditingController();
+  late final FocusNode _searchFieldFocusNode = FocusNode(debugLabel: '${widget.type.name}_search_field');
+  bool _searching = false;
+  String _query = '';
+
+  void _openSearch() {
+    setState(() => _searching = true);
+    // Só depois do campo existir de verdade na árvore (próximo frame) — pedir
+    // foco no mesmo build em que o campo aparece não tem efeito.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _searchFieldFocusNode.requestFocus();
+    });
+  }
+
+  void _closeSearch() {
+    setState(() {
+      _searching = false;
+      _query = '';
+      _searchController.clear();
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _searchFieldFocusNode.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -390,34 +451,45 @@ class _ContentTabView extends StatelessWidget {
       builder: (context, constraints) {
         final isWide = constraints.maxWidth >= _sidebarBreakpoint;
 
+        final header = CategoryFilterHeader(
+          isWide: isWide,
+          searching: _searching,
+          searchController: _searchController,
+          searchFocusNode: _searchFieldFocusNode,
+          searchHintText: widget.searchHintText,
+          onOpenSearch: _openSearch,
+          onCloseSearch: _closeSearch,
+          onQueryChanged: (value) => setState(() => _query = value),
+          narrowCategoriesWidget: _CategoriesChips(type: widget.type),
+          wideCategoriesWidget: _CategoriesSidebar(type: widget.type),
+        );
+
+        // `key` identifica esta aba especificamente em testes (ver
+        // home_screen_dpad_test.dart) -- a TabBarView mantém as 3 abas de
+        // conteúdo montadas ao mesmo tempo (mesmo fora de tela), então
+        // finders genéricos (ex: `find.byIcon(Icons.search)`) sozinhos
+        // encontrariam as 3 lupas de uma vez sem esse escopo.
         return FocusTraversalGroup(
+          key: ValueKey('${widget.type.name}_content_tab'),
           child: isWide
               ? Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    SizedBox(width: 260, child: _CategoriesSidebar(type: type)),
+                    SizedBox(width: 260, child: header),
                     const VerticalDivider(width: 1),
-                    Expanded(child: _streamsPanel(type)),
+                    Expanded(child: widget.streamsPanelBuilder(_query)),
                   ],
                 )
               : Column(
                   children: [
-                    _CategoriesChips(type: type),
+                    header,
                     const Divider(height: 1),
-                    Expanded(child: _streamsPanel(type)),
+                    Expanded(child: widget.streamsPanelBuilder(_query)),
                   ],
                 ),
         );
       },
     );
-  }
-
-  Widget _streamsPanel(ContentType type) {
-    return switch (type) {
-      ContentType.live => const _LiveStreamsPanel(),
-      ContentType.vod => const _VodGrid(),
-      ContentType.series => const _SeriesGrid(),
-    };
   }
 }
 
@@ -664,7 +736,12 @@ class _CategoriesChips extends StatelessWidget {
 // ---------------------------------------------------------------------
 
 class _LiveStreamsPanel extends StatelessWidget {
-  const _LiveStreamsPanel();
+  /// Filtro local (item 3 do ajuste de UI) — sempre aplicado em cima de
+  /// [TabState.streams] já carregado, nunca dispara chamada de rede nova
+  /// (ver _LiveTabView/_LiveSearchField).
+  final String searchQuery;
+
+  const _LiveStreamsPanel({this.searchQuery = ''});
 
   @override
   Widget build(BuildContext context) {
@@ -703,48 +780,120 @@ class _LiveStreamsPanel extends StatelessWidget {
           );
         }
 
-        return ListView.builder(
-          padding: const EdgeInsets.symmetric(vertical: AppSpacing.s),
-          itemCount: state.streams.length,
-          itemBuilder: (context, index) {
-            final channel = state.streams[index];
+        final query = searchQuery.trim().toLowerCase();
+        final filtered = query.isEmpty
+            ? state.streams
+            : state.streams
+                .where((channel) => channel.name.toLowerCase().contains(query))
+                .toList();
 
-            return DpadFocusHighlight(
-              key: ValueKey('live_stream_${channel.streamId}'),
-              scaleOnFocus: false,
-              borderRadius: BorderRadius.circular(4),
-              builder: (context, focusNode, hasFocus) => ListTile(
-                focusNode: focusNode,
-                dense: true,
-                visualDensity: VisualDensity.compact,
-                leading: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    _StreamThumb(
-                      url: channel.streamIcon,
-                      fallbackIcon: Icons.tv,
-                      size: AppCardSizes.liveThumbSize,
-                      shape: BoxShape.circle,
-                    ),
-                    const Positioned(
-                      right: -2,
-                      bottom: -2,
-                      child: _LivePulseBadge(),
-                    ),
-                  ],
+        if (filtered.isEmpty) {
+          return _EmptyHint(
+            icon: Icons.search_off,
+            message: 'Nenhum canal encontrado para "${searchQuery.trim()}".',
+          );
+        }
+
+        // Canais com tag de qualidade (FHD/HD/SD) no nome viram cards num
+        // grid, no mesmo padrão visual de VOD/Séries (mesmo _PosterCard,
+        // mesmas dimensões/raio/espaçamento — ver AppCardSizes.
+        // posterGridDelegate); os demais continuam na lista simples de
+        // sempre. Os dois convivem no MESMO scroll (CustomScrollView),
+        // nunca dois scrolls independentes um do lado do outro.
+        final cardChannels = <LiveStream>[];
+        final listChannels = <LiveStream>[];
+        for (final channel in filtered) {
+          if (parseChannelQuality(channel.name) != null) {
+            cardChannels.add(channel);
+          } else {
+            listChannels.add(channel);
+          }
+        }
+
+        return CustomScrollView(
+          slivers: [
+            if (cardChannels.isNotEmpty)
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(
+                  AppSpacing.m,
+                  AppSpacing.m,
+                  AppSpacing.m,
+                  AppSpacing.s,
                 ),
-                title: Text(
-                  channel.name,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppTheme.cardTitleStyle,
+                sliver: SliverGrid(
+                  gridDelegate: AppCardSizes.posterGridDelegate,
+                  delegate: SliverChildBuilderDelegate(
+                    (context, index) {
+                      final channel = cardChannels[index];
+                      final quality = parseChannelQuality(channel.name)!;
+
+                      return DpadFocusHighlight(
+                        key: ValueKey('live_stream_card_${channel.streamId}'),
+                        builder: (context, focusNode, hasFocus) => _PosterCard(
+                          focusNode: focusNode,
+                          title: channel.name,
+                          imageUrl: channel.streamIcon,
+                          fallbackIcon: Icons.tv,
+                          rating: 0,
+                          titleStyle: AppTheme.liveChannelNameStyle,
+                          topLeftBadge: QualityBadge(quality: quality),
+                          onTap: () => _playLiveChannel(context, channel),
+                        ),
+                      );
+                    },
+                    childCount: cardChannels.length,
+                  ),
                 ),
-                trailing: channel.tvArchive
-                    ? const Icon(Icons.replay_circle_filled_outlined, size: 18)
-                    : null,
-                onTap: () => _playLiveChannel(context, channel),
               ),
-            );
-          },
+            if (listChannels.isNotEmpty)
+              SliverPadding(
+                padding: const EdgeInsets.symmetric(vertical: AppSpacing.s),
+                sliver: SliverList(
+                  delegate: SliverChildBuilderDelegate(
+                    (context, index) {
+                      final channel = listChannels[index];
+
+                      return DpadFocusHighlight(
+                        key: ValueKey('live_stream_${channel.streamId}'),
+                        scaleOnFocus: false,
+                        borderRadius: BorderRadius.circular(4),
+                        builder: (context, focusNode, hasFocus) => ListTile(
+                          focusNode: focusNode,
+                          dense: true,
+                          visualDensity: VisualDensity.compact,
+                          leading: Stack(
+                            clipBehavior: Clip.none,
+                            children: [
+                              _StreamThumb(
+                                url: channel.streamIcon,
+                                fallbackIcon: Icons.tv,
+                                size: AppCardSizes.liveThumbSize,
+                                shape: BoxShape.circle,
+                              ),
+                              const Positioned(
+                                right: -2,
+                                bottom: -2,
+                                child: _LivePulseBadge(),
+                              ),
+                            ],
+                          ),
+                          title: Text(
+                            channel.name,
+                            overflow: TextOverflow.ellipsis,
+                            style: AppTheme.liveChannelNameStyle,
+                          ),
+                          trailing: channel.tvArchive
+                              ? const Icon(Icons.replay_circle_filled_outlined, size: 18)
+                              : null,
+                          onTap: () => _playLiveChannel(context, channel),
+                        ),
+                      );
+                    },
+                    childCount: listChannels.length,
+                  ),
+                ),
+              ),
+          ],
         );
       },
     );
@@ -756,7 +905,12 @@ class _LiveStreamsPanel extends StatelessWidget {
 // ---------------------------------------------------------------------
 
 class _VodGrid extends StatelessWidget {
-  const _VodGrid();
+  /// Filtro local (mesmo padrão da Live TV, ver _LiveStreamsPanel) — sempre
+  /// aplicado em cima de [TabState.streams] já carregado, nunca dispara
+  /// chamada de rede nova.
+  final String searchQuery;
+
+  const _VodGrid({this.searchQuery = ''});
 
   @override
   Widget build(BuildContext context) {
@@ -791,6 +945,18 @@ class _VodGrid extends StatelessWidget {
           );
         }
 
+        final query = searchQuery.trim().toLowerCase();
+        final movies = query.isEmpty
+            ? state.streams
+            : state.streams.where((movie) => movie.name.toLowerCase().contains(query)).toList();
+
+        if (movies.isEmpty) {
+          return _EmptyHint(
+            icon: Icons.search_off,
+            message: 'Nenhum filme encontrado para "${searchQuery.trim()}".',
+          );
+        }
+
         return GridView.builder(
           padding: const EdgeInsets.all(AppSpacing.m),
           // VOD/Séries podem ter centenas de itens por categoria — um
@@ -799,9 +965,9 @@ class _VodGrid extends StatelessWidget {
           // frame) sem carregar imagens demais de uma vez.
           scrollCacheExtent: const ScrollCacheExtent.pixels(500),
           gridDelegate: AppCardSizes.posterGridDelegate,
-          itemCount: state.streams.length,
+          itemCount: movies.length,
           itemBuilder: (context, index) {
-            final movie = state.streams[index];
+            final movie = movies[index];
 
             return DpadFocusHighlight(
               key: ValueKey('vod_stream_${movie.streamId}'),
@@ -826,7 +992,12 @@ class _VodGrid extends StatelessWidget {
 // ---------------------------------------------------------------------
 
 class _SeriesGrid extends StatelessWidget {
-  const _SeriesGrid();
+  /// Filtro local (mesmo padrão da Live TV, ver _LiveStreamsPanel) — sempre
+  /// aplicado em cima de [TabState.streams] já carregado, nunca dispara
+  /// chamada de rede nova.
+  final String searchQuery;
+
+  const _SeriesGrid({this.searchQuery = ''});
 
   @override
   Widget build(BuildContext context) {
@@ -861,6 +1032,18 @@ class _SeriesGrid extends StatelessWidget {
           );
         }
 
+        final query = searchQuery.trim().toLowerCase();
+        final shows = query.isEmpty
+            ? state.streams
+            : state.streams.where((show) => show.name.toLowerCase().contains(query)).toList();
+
+        if (shows.isEmpty) {
+          return _EmptyHint(
+            icon: Icons.search_off,
+            message: 'Nenhuma série encontrada para "${searchQuery.trim()}".',
+          );
+        }
+
         return GridView.builder(
           padding: const EdgeInsets.all(AppSpacing.m),
           // VOD/Séries podem ter centenas de itens por categoria — um
@@ -869,9 +1052,9 @@ class _SeriesGrid extends StatelessWidget {
           // frame) sem carregar imagens demais de uma vez.
           scrollCacheExtent: const ScrollCacheExtent.pixels(500),
           gridDelegate: AppCardSizes.posterGridDelegate,
-          itemCount: state.streams.length,
+          itemCount: shows.length,
           itemBuilder: (context, index) {
-            final show = state.streams[index];
+            final show = shows[index];
 
             return DpadFocusHighlight(
               key: ValueKey('series_${show.seriesId}'),
@@ -1014,6 +1197,17 @@ class _PosterCard extends StatelessWidget {
   /// todo o resto do app, onde o card não representa progresso nenhum).
   final double? progressFraction;
 
+  /// Selo extra no canto SUPERIOR ESQUERDO do pôster (ex: [QualityBadge]
+  /// dos canais de Live TV, ver _LiveStreamsPanel) — `null` em VOD/Séries/
+  /// Continuar Assistindo, que só usam o selo de nota (canto superior
+  /// direito, ver [rating]).
+  final Widget? topLeftBadge;
+
+  /// Estilo do título abaixo do pôster — default [AppTheme.cardTitleStyle]
+  /// (mesmo de sempre em VOD/Séries/Continuar Assistindo). Live TV passa
+  /// [AppTheme.liveChannelNameStyle], menor.
+  final TextStyle? titleStyle;
+
   const _PosterCard({
     required this.title,
     required this.imageUrl,
@@ -1022,6 +1216,8 @@ class _PosterCard extends StatelessWidget {
     required this.onTap,
     this.focusNode,
     this.progressFraction,
+    this.topLeftBadge,
+    this.titleStyle,
   });
 
   @override
@@ -1050,6 +1246,12 @@ class _PosterCard extends StatelessWidget {
                     right: 6,
                     child: _RatingBadge(rating: rating),
                   ),
+                if (topLeftBadge != null)
+                  Positioned(
+                    top: 6,
+                    left: 6,
+                    child: topLeftBadge!,
+                  ),
                 if (progressFraction != null)
                   Positioned(
                     left: 0,
@@ -1065,7 +1267,7 @@ class _PosterCard extends StatelessWidget {
             title,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: AppTheme.cardTitleStyle,
+            style: titleStyle ?? AppTheme.cardTitleStyle,
           ),
         ],
       ),

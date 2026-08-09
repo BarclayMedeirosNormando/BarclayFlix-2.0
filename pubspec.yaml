@@ -77,9 +77,8 @@ dependencies:
   google_fonts: ^6.2.1
 
   # Lê a versão/build number do app (do próprio pubspec.yaml, ver `version:`
-  # acima) em runtime. Atualmente sem uso em lib/ (a ProfilesScreen que a
-  # exibia foi removida por estar fora do fluxo principal); mantido pois é
-  # utilidade comum a ser reaproveitada por uma tela de "Sobre"/configurações.
+  # acima) em runtime. Usado pela ServerSelectionScreen para exibir a versão
+  # instalada no título "Bem-vindo, {nomeCliente} - v{versao}".
   package_info_plus: ^9.0.1
 
 dev_dependencies:

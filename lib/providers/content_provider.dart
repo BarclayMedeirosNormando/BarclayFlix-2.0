@@ -46,6 +46,22 @@ class ContentProvider extends ChangeNotifier {
   // ignore: prefer_initializing_formals
   ContentProvider({required XtreamApiService apiService}) : _apiService = apiService;
 
+  /// Id sintético da categoria "Todos" — nunca vem da API. Mesma ideia nas
+  /// 3 abas de conteúdo (Live TV, VOD, Séries), cada uma com sua PRÓPRIA
+  /// lista de categorias (nunca misturadas entre si, ver [TabState] — um
+  /// [_allCategory] por [TabState], não uma lista global compartilhada). Ao
+  /// ser selecionada, busca TODOS os itens da aba numa única chamada (mesmo
+  /// endpoint já usado por qualquer categoria real, só que sem
+  /// `category_id`), nunca uma soma de chamadas por categoria (ver
+  /// [_resolveCategoryId]).
+  static const String allCategoriesId = '__all__';
+
+  static const Category _allCategory = Category(
+    id: allCategoriesId,
+    name: 'Todos',
+    parentId: 0,
+  );
+
   final TabState<LiveStream> live = TabState<LiveStream>();
   final TabState<VodStream> vod = TabState<VodStream>();
   final TabState<Series> series = TabState<Series>();
@@ -77,35 +93,57 @@ class ContentProvider extends ChangeNotifier {
         ContentType.series => series.selectedCategoryId,
       };
 
-  /// Carrega as categorias de [type]. Se já foram carregadas com sucesso
-  /// nesta sessão, não repete a chamada de rede (use [refresh] para forçar).
+  /// Carrega as categorias de [type], injetando "Todos" como primeira opção
+  /// e, na primeira carga (nenhuma categoria selecionada ainda), a
+  /// selecionando automaticamente — só na primeira, para não sobrescrever
+  /// uma escolha do usuário em cargas seguintes (ex: reabrir a aba depois
+  /// de já ter escolhido outra categoria). Se já foram carregadas com
+  /// sucesso nesta sessão, não repete a chamada de rede (use [refresh] para
+  /// forçar).
   Future<void> loadCategories(ContentType type) {
     return switch (type) {
-      ContentType.live => _loadCategories(live, _apiService.getLiveCategories),
-      ContentType.vod => _loadCategories(vod, _apiService.getVodCategories),
-      ContentType.series => _loadCategories(series, _apiService.getSeriesCategories),
+      ContentType.live => _loadCategoriesAndDefaultToAll(live, _apiService.getLiveCategories, _fetchLiveStreams),
+      ContentType.vod => _loadCategoriesAndDefaultToAll(vod, _apiService.getVodCategories, _fetchVodStreams),
+      ContentType.series =>
+        _loadCategoriesAndDefaultToAll(series, _apiService.getSeriesCategories, _fetchSeriesStreams),
     };
   }
+
+  Future<void> _loadCategoriesAndDefaultToAll<TStream>(
+    TabState<TStream> state,
+    Future<List<Category>> Function() fetchCategories,
+    Future<List<TStream>> Function(String categoryId) fetchStreams,
+  ) async {
+    await _loadCategories(state, fetchCategories, transform: _withAllCategory);
+
+    if (state.categoriesStatus == LoadStatus.success && state.selectedCategoryId == null) {
+      await _selectCategory(state, allCategoriesId, fetchStreams);
+    }
+  }
+
+  static List<Category> _withAllCategory(List<Category> categories) => [_allCategory, ...categories];
+
+  /// "Todos" ([allCategoriesId]) vira uma chamada SEM `category_id` (a
+  /// própria API Xtream já devolve tudo nesse caso) — mesma resolução pras
+  /// 3 abas, nunca uma soma de chamadas por categoria.
+  String? _resolveCategoryId(String categoryId) => categoryId == allCategoriesId ? null : categoryId;
+
+  Future<List<LiveStream>> _fetchLiveStreams(String categoryId) =>
+      _apiService.getLiveStreams(categoryId: _resolveCategoryId(categoryId));
+
+  Future<List<VodStream>> _fetchVodStreams(String categoryId) =>
+      _apiService.getVodStreams(categoryId: _resolveCategoryId(categoryId));
+
+  Future<List<Series>> _fetchSeriesStreams(String categoryId) =>
+      _apiService.getSeriesList(categoryId: _resolveCategoryId(categoryId));
 
   /// Seleciona [categoryId] na aba [type] e carrega os streams dessa
   /// categoria (usando cache em memória quando disponível).
   Future<void> selectCategory(ContentType type, String categoryId) {
     return switch (type) {
-      ContentType.live => _selectCategory(
-          live,
-          categoryId,
-          (id) => _apiService.getLiveStreams(categoryId: id),
-        ),
-      ContentType.vod => _selectCategory(
-          vod,
-          categoryId,
-          (id) => _apiService.getVodStreams(categoryId: id),
-        ),
-      ContentType.series => _selectCategory(
-          series,
-          categoryId,
-          (id) => _apiService.getSeriesList(categoryId: id),
-        ),
+      ContentType.live => _selectCategory(live, categoryId, _fetchLiveStreams),
+      ContentType.vod => _selectCategory(vod, categoryId, _fetchVodStreams),
+      ContentType.series => _selectCategory(series, categoryId, _fetchSeriesStreams),
     };
   }
 
@@ -117,26 +155,27 @@ class ContentProvider extends ChangeNotifier {
     return switch (type) {
       ContentType.live => _refresh(
           live,
-          _apiService.getLiveCategories,
-          (id) => _apiService.getLiveStreams(categoryId: id),
+          () => _loadCategories(live, _apiService.getLiveCategories, transform: _withAllCategory),
+          _fetchLiveStreams,
         ),
       ContentType.vod => _refresh(
           vod,
-          _apiService.getVodCategories,
-          (id) => _apiService.getVodStreams(categoryId: id),
+          () => _loadCategories(vod, _apiService.getVodCategories, transform: _withAllCategory),
+          _fetchVodStreams,
         ),
       ContentType.series => _refresh(
           series,
-          _apiService.getSeriesCategories,
-          (id) => _apiService.getSeriesList(categoryId: id),
+          () => _loadCategories(series, _apiService.getSeriesCategories, transform: _withAllCategory),
+          _fetchSeriesStreams,
         ),
     };
   }
 
   Future<void> _loadCategories<TStream>(
     TabState<TStream> state,
-    Future<List<Category>> Function() fetch,
-  ) async {
+    Future<List<Category>> Function() fetch, {
+    List<Category> Function(List<Category>)? transform,
+  }) async {
     if (state.categoriesStatus == LoadStatus.success) return;
 
     state.categoriesStatus = LoadStatus.loading;
@@ -144,7 +183,8 @@ class ContentProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      state.categories = await fetch();
+      final categories = await fetch();
+      state.categories = transform == null ? categories : transform(categories);
       state.categoriesStatus = LoadStatus.success;
     } on XtreamApiException catch (e) {
       state.categoriesStatus = LoadStatus.error;
@@ -195,12 +235,12 @@ class ContentProvider extends ChangeNotifier {
 
   Future<void> _refresh<TStream>(
     TabState<TStream> state,
-    Future<List<Category>> Function() fetchCategories,
+    Future<void> Function() loadCategories,
     Future<List<TStream>> Function(String categoryId) fetchStreams,
   ) async {
     state._streamsCache.clear();
     state.categoriesStatus = LoadStatus.idle;
-    await _loadCategories(state, fetchCategories);
+    await loadCategories();
 
     final selected = state.selectedCategoryId;
     if (selected != null) {

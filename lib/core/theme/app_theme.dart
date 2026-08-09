@@ -16,6 +16,16 @@ class AppTheme {
   /// não reduz mais que isso mesmo com os cards menores.
   static const TextStyle cardTitleStyle = TextStyle(fontSize: 12, fontWeight: FontWeight.w600);
 
+  /// Nome do canal em Live TV (lista simples E cards com [QualityBadge], ver
+  /// HomeScreen._LiveStreamsPanel) — ~40% menor que [cardTitleStyle] a
+  /// pedido do ajuste de UI (12 * 0.6 = 7.2), mas nunca abaixo do piso de
+  /// legibilidade a distância de sofá pedido junto (10-11px): 7.2 ficaria
+  /// ilegível numa TV, então o piso prevalece sobre o multiplicador exato.
+  /// Deliberadamente SEPARADO de [cardTitleStyle] (não uma redução do
+  /// próprio valor compartilhado) para não afetar VOD/Séries/Continuar
+  /// Assistindo, que continuam com o tamanho de sempre.
+  static const TextStyle liveChannelNameStyle = TextStyle(fontSize: 11, fontWeight: FontWeight.w600);
+
   /// Nome do canal/filme/episódio na barra superior do OSD do player —
   /// maior/mais peso que o título de card, já que é o único texto na tela
   /// enquanto o conteúdo toca. A sombra compensa o OSD (Bloco 2) só ter

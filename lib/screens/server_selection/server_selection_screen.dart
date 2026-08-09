@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/theme/app_theme.dart';
@@ -29,10 +30,21 @@ class ServerSelectionScreen extends StatefulWidget {
   /// `null`).
   final String? existingProfileId;
 
+  /// Nome do cliente (vindo do Master Login/ativação de dispositivo, ver
+  /// [DeviceAuthResult]) — personaliza o título ("Bem-vindo, {nomeCliente}")
+  /// e é repassado a [ProfilesProvider.chooseServer] para persistir no
+  /// [SavedProfile] resultante. Nunca usado na lógica de escolha do
+  /// servidor em si. Quando `null`/vazio, o título cai no fallback do
+  /// perfil salvo mais recente (ver [build]), e só se este também não
+  /// tiver um nome persistido é que vira o título genérico "Escolha um
+  /// servidor".
+  final String? nomeCliente;
+
   const ServerSelectionScreen({
     super.key,
     required this.servers,
     this.existingProfileId,
+    this.nomeCliente,
   });
 
   @override
@@ -45,6 +57,28 @@ class _ServerSelectionScreenState extends State<ServerSelectionScreen> {
   String? _selectingDns;
   String? _errorMessage;
 
+  // Versão instalada do app (package_info_plus, mesmo mecanismo usado pelo
+  // check_version do Master Login para comparar com a versão mais recente).
+  // Lida em segundo plano — a tela nunca espera por ela: começa `null` e o
+  // título "Bem-vindo" ganha o sufixo " - v{versao}" assim que resolver.
+  String? _appVersion;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAppVersion();
+  }
+
+  Future<void> _loadAppVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (!mounted) return;
+      setState(() => _appVersion = info.version);
+    } catch (_) {
+      // Sem versão disponível: título cai para o formato sem sufixo.
+    }
+  }
+
   Future<void> _choose(ServerOption server) async {
     setState(() {
       _selectingDns = server.dns;
@@ -55,6 +89,7 @@ class _ServerSelectionScreenState extends State<ServerSelectionScreen> {
     final success = await profilesProvider.chooseServer(
       server: server,
       existingProfileId: widget.existingProfileId,
+      nomeCliente: widget.nomeCliente,
     );
 
     if (!mounted) return;
@@ -79,6 +114,14 @@ class _ServerSelectionScreenState extends State<ServerSelectionScreen> {
   @override
   Widget build(BuildContext context) {
     final isChoosing = _selectingDns != null;
+    final freshNomeCliente = widget.nomeCliente?.trim();
+    final persistedNomeCliente = context.watch<ProfilesProvider>().savedProfile?.nomeCliente?.trim();
+    final nomeCliente = (freshNomeCliente != null && freshNomeCliente.isNotEmpty)
+        ? freshNomeCliente
+        : persistedNomeCliente;
+    final titulo = (nomeCliente != null && nomeCliente.isNotEmpty)
+        ? 'Bem-vindo, $nomeCliente${_appVersion != null ? ' - v$_appVersion' : ''}'
+        : 'Escolha um servidor';
 
     return Scaffold(
       appBar: AppBar(title: const Text('Escolha um servidor')),
@@ -90,10 +133,10 @@ class _ServerSelectionScreenState extends State<ServerSelectionScreen> {
             children: [
               const Icon(Icons.live_tv_rounded, size: 64, color: AppTheme.primaryColor),
               const SizedBox(height: 12),
-              const Text(
-                'Escolha um servidor',
+              Text(
+                titulo,
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 4),
               Text(

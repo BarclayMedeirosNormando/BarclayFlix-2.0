@@ -15,6 +15,9 @@ IconData categoryIcon(String categoryName) {
 
   bool has(List<String> keywords) => keywords.any(name.contains);
 
+  // Categoria sintética "Todos" (Live TV, ver ContentProvider) — checada
+  // primeiro só por clareza; não colide com nenhuma outra palavra-chave.
+  if (has(['todos', 'all'])) return Icons.select_all;
   if (has(['ação', 'acao', 'action'])) return Icons.local_fire_department;
   if (has(['comédia', 'comedia', 'comedy'])) return Icons.theater_comedy;
   if (has(['documentário', 'documentario', 'document'])) return Icons.menu_book;

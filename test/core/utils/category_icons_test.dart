@@ -46,6 +46,10 @@ void main() {
       expect(categoryIcon('TV Series'), Icons.tv);
     });
 
+    test('reconhece a categoria sintética "Todos" (Live TV)', () {
+      expect(categoryIcon('Todos'), Icons.select_all);
+    });
+
     test('cai no ícone genérico quando nenhuma palavra-chave bate', () {
       expect(categoryIcon('Categoria Misteriosa 123'), Icons.category);
       expect(categoryIcon(''), Icons.category);

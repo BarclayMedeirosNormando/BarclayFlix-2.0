@@ -98,7 +98,11 @@ class ProfilesProvider extends ChangeNotifier {
       return false;
     }
 
-    final updated = profile.copyWith(dataUltimoAcesso: DateTime.now());
+    final freshNomeCliente = result.nomeCliente.trim();
+    final updated = profile.copyWith(
+      dataUltimoAcesso: DateTime.now(),
+      nomeCliente: freshNomeCliente.isEmpty ? profile.nomeCliente : freshNomeCliente,
+    );
     _savedProfiles = [
       updated,
       ..._savedProfiles.where((existing) => existing.id != profile.id),
@@ -119,12 +123,22 @@ class ProfilesProvider extends ChangeNotifier {
   /// faz o resultado ATUALIZAR esse perfil já salvo (mesmo id, só os
   /// campos do servidor mudam) em vez de criar um registro novo. Sem ele
   /// (primeira ativação), cria um [SavedProfile] novo.
+  ///
+  /// [nomeCliente], quando informado (vindo do [DeviceAuthResult] mais
+  /// recente), é persistido no perfil resultante — fonte da saudação
+  /// "Bem-vindo, {nomeCliente}" (ServerSelectionScreen) em acessos futuros.
+  /// Se omitido/vazio ao atualizar um perfil existente, o valor já
+  /// persistido é mantido em vez de apagado.
   Future<bool> chooseServer({
     required ServerOption server,
     String? existingProfileId,
+    String? nomeCliente,
   }) async {
     final result = await _authProvider.loginWithServer(server: server);
     if (result == null) return false;
+
+    final existingProfile = existingProfileId == null ? null : _findProfileById(existingProfileId);
+    final trimmedNomeCliente = nomeCliente?.trim();
 
     final profile = SavedProfile(
       id: existingProfileId ?? 'profile_${DateTime.now().microsecondsSinceEpoch}',
@@ -133,6 +147,9 @@ class ProfilesProvider extends ChangeNotifier {
       xtreamPassword: server.password,
       dns: server.dns,
       nomeServidor: server.nome.trim().isEmpty ? null : server.nome.trim(),
+      nomeCliente: (trimmedNomeCliente != null && trimmedNomeCliente.isNotEmpty)
+          ? trimmedNomeCliente
+          : existingProfile?.nomeCliente,
       dataUltimoAcesso: DateTime.now(),
     );
 
@@ -170,6 +187,13 @@ class ProfilesProvider extends ChangeNotifier {
   ServerOption? _findServerByDns(List<ServerOption> servers, String dns) {
     for (final server in servers) {
       if (server.dns == dns) return server;
+    }
+    return null;
+  }
+
+  SavedProfile? _findProfileById(String id) {
+    for (final profile in _savedProfiles) {
+      if (profile.id == id) return profile;
     }
     return null;
   }
