@@ -27,6 +27,17 @@
 
 .NOTES
     Pre-requisitos:
+    - .env na raiz do projeto, com APPS_SCRIPT_URL preenchida (gerado por
+      scripts/setup_env.ps1) -- o script ABORTA se faltar. Sem essa
+      variavel injetada via --dart-define, o build sai com
+      AppConfig.appsScriptUrl vazia e o fluxo de ativacao por device-code
+      quebra silenciosamente: a chamada HTTP falha, cai num catch
+      generico, e a ActivationScreen trata isso como "ainda aguardando
+      cadastro", travando pra sempre em "Aguardando ativacao..." sem
+      mostrar erro nenhum -- bug real ja visto em producao (releases
+      geradas por este script antes desta checagem existir), so
+      descoberto testando no dispositivo. Ver scripts/run_dev.ps1, que ja
+      fazia essa leitura corretamente para "flutter run".
     - android/key.properties configurado, se quiser o APK assinado com o
       keystore de producao (upload key). Sem ele, o build cai
       automaticamente no signing de debug -- ver
@@ -75,6 +86,36 @@ Set-Location $root
 function Write-Step($message) {
     Write-Host "`n== $message ==" -ForegroundColor Cyan
 }
+
+# 0. .env / APPS_SCRIPT_URL -- precisa estar definida ANTES de qualquer
+# build, senao AppConfig.appsScriptUrl (String.fromEnvironment) sai vazia
+# no binario gerado e o fluxo de ativacao por device-code quebra
+# silenciosamente (ver .NOTES acima). Mesma leitura que scripts/run_dev.ps1
+# ja faz para "flutter run" -- replicada aqui em vez de builda um release
+# sem essa variavel e so descobrir o problema testando no dispositivo.
+Write-Step 'Carregando APPS_SCRIPT_URL do .env'
+$envPath = Join-Path $root '.env'
+if (-not (Test-Path $envPath)) {
+    throw "Nao encontrei .env em $envPath -- APPS_SCRIPT_URL nao definida. Rode scripts/setup_env.ps1 primeiro. Build de release abortado."
+}
+
+$appsScriptUrl = $null
+foreach ($line in Get-Content -Path $envPath) {
+    if ($line -match '^\s*APPS_SCRIPT_URL\s*=\s*(.+?)\s*$') {
+        $appsScriptUrl = $matches[1]
+        break
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($appsScriptUrl)) {
+    throw "APPS_SCRIPT_URL nao definida (ou vazia) em .env -- build de release abortado. Rode scripts/setup_env.ps1 para reconfigurar."
+}
+
+# NUNCA imprime $appsScriptUrl -- so a confirmacao de que carregou (mesmo
+# cuidado de scripts/run_dev.ps1, para nao vazar a URL real em prints de
+# tela/gravacoes).
+Write-Host "APPS_SCRIPT_URL carregada do .env com sucesso." -ForegroundColor Green
+$appsScriptUrlDefine = "--dart-define=APPS_SCRIPT_URL=$appsScriptUrl"
 
 # 1. Versao (de "version: 1.0.0+1" extrai "1.0.0")
 $pubspecPath = Join-Path $root 'pubspec.yaml'
@@ -127,7 +168,7 @@ try {
     # $ErrorActionPreference volta a 'Stop' logo em seguida.
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    flutter build apk --release
+    flutter build apk --release $appsScriptUrlDefine
     $ErrorActionPreference = $previousErrorActionPreference
     if ($LASTEXITCODE -ne 0) {
         throw "flutter build apk --release terminou com exit code $LASTEXITCODE"
@@ -153,7 +194,7 @@ try {
     # Mesmo raciocínio do bloco Android acima -- ver o comentário lá.
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    flutter build windows --release
+    flutter build windows --release $appsScriptUrlDefine
     $ErrorActionPreference = $previousErrorActionPreference
     if ($LASTEXITCODE -ne 0) {
         throw "flutter build windows --release terminou com exit code $LASTEXITCODE"
