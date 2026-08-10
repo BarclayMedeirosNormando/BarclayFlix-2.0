@@ -158,15 +158,9 @@ class PlayerProvider extends ChangeNotifier {
     _duration = Duration.zero;
     _safeNotify();
 
-    // DIAGNÓSTICO TEMPORÁRIO (investigação de travamento da janela ao cair
-    // o Wi-Fi durante reprodução) — remover junto com os demais debugPrint
-    // depois que a causa raiz for confirmada e corrigida.
-    debugPrint('[PlayerProvider] ${DateTime.now()} player.open() START url=$url');
     try {
       await player.open(Media(url));
-      debugPrint('[PlayerProvider] ${DateTime.now()} player.open() END (sucesso) url=$url');
     } catch (_) {
-      debugPrint('[PlayerProvider] ${DateTime.now()} player.open() END (erro) url=$url');
       // Se o usuário já saiu da tela (provider disposto) ou já pediu outra
       // mídia enquanto esta abria, ignora o resultado tardio.
       if (_disposed || _currentUrl != url) return;
@@ -180,12 +174,9 @@ class PlayerProvider extends ChangeNotifier {
     if (_disposed || _currentUrl != url) return;
 
     if (startAtSeconds > 0) {
-      debugPrint('[PlayerProvider] ${DateTime.now()} player.seek() START (startAtSeconds=$startAtSeconds)');
       try {
         await player.seek(Duration(seconds: startAtSeconds.round()));
-        debugPrint('[PlayerProvider] ${DateTime.now()} player.seek() END (sucesso, startAtSeconds)');
       } catch (_) {
-        debugPrint('[PlayerProvider] ${DateTime.now()} player.seek() END (erro, startAtSeconds)');
         // Retomar de uma posição salva é um bônus — se o seek falhar, o
         // conteúdo ainda toca normalmente do início em vez de virar erro.
       }
@@ -214,37 +205,15 @@ class PlayerProvider extends ChangeNotifier {
     );
   }
 
-  // DIAGNÓSTICO TEMPORÁRIO nos 4 métodos abaixo (investigação de
-  // travamento da janela ao cair o Wi-Fi durante reprodução) — convertidos
-  // de arrow function pra corpo async só pra poder envolver a chamada com
-  // debugPrint de início/fim, sem mudar o que cada um faz. Remover junto
-  // com os demais debugPrint depois que a causa raiz for confirmada e
-  // corrigida.
-  Future<void> togglePlayPause() async {
-    debugPrint('[PlayerProvider] ${DateTime.now()} player.playOrPause() START');
-    await player.playOrPause();
-    debugPrint('[PlayerProvider] ${DateTime.now()} player.playOrPause() END');
-  }
+  Future<void> togglePlayPause() => player.playOrPause();
 
   /// Usados pelas teclas de mídia física (play/pause dedicados), que devem
   /// forçar o estado em vez de alternar — ver [PlayerScreen].
-  Future<void> play() async {
-    debugPrint('[PlayerProvider] ${DateTime.now()} player.play() START');
-    await player.play();
-    debugPrint('[PlayerProvider] ${DateTime.now()} player.play() END');
-  }
+  Future<void> play() => player.play();
 
-  Future<void> pause() async {
-    debugPrint('[PlayerProvider] ${DateTime.now()} player.pause() START');
-    await player.pause();
-    debugPrint('[PlayerProvider] ${DateTime.now()} player.pause() END');
-  }
+  Future<void> pause() => player.pause();
 
-  Future<void> seek(Duration position) async {
-    debugPrint('[PlayerProvider] ${DateTime.now()} player.seek() START pos=$position');
-    await player.seek(position);
-    debugPrint('[PlayerProvider] ${DateTime.now()} player.seek() END pos=$position');
-  }
+  Future<void> seek(Duration position) => player.seek(position);
 
   /// Avança/retrocede a partir da posição atual em [offset] (negativo
   /// retrocede), sem passar de zero nem da duração total — usado pelos
@@ -272,9 +241,7 @@ class PlayerProvider extends ChangeNotifier {
     _status = PlayerLoadStatus.idle;
     _errorMessage = null;
     _safeNotify();
-    debugPrint('[PlayerProvider] ${DateTime.now()} player.stop() START');
     await player.stop();
-    debugPrint('[PlayerProvider] ${DateTime.now()} player.stop() END');
   }
 
   void _onPlayerError(String message) {
