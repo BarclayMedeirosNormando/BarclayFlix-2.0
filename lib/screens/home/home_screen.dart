@@ -1359,7 +1359,14 @@ class _StreamThumb extends StatelessWidget {
         fallback: fallback,
         width: size,
         height: size,
-        cacheWidth: 120,
+        // 3x o tamanho lógico exibido (mesma regra de _PosterImage) — cobre
+        // devicePixelRatio até 3 sem decodificar mais que o necessário. Fixa
+        // também cacheHeight (não só cacheWidth): a caixa é sempre quadrada
+        // aqui, mas o logo de origem raramente é 1:1, então sem isso o
+        // decoder infere a altura pela proporção ORIGINAL da imagem em vez
+        // da proporção da caixa.
+        cacheWidth: (size * 3).round(),
+        cacheHeight: (size * 3).round(),
       ),
     );
   }
