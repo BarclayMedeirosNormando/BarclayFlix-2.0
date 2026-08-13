@@ -205,9 +205,6 @@ class _PlayerScreenBodyState extends State<_PlayerScreenBody> {
             );
       },
     )..start();
-    // DIAGNÓSTICO TEMPORÁRIO (ver instrumentação em playback_health_monitor.dart)
-    // — remover junto com os demais debugPrint depois de confirmada a causa raiz.
-    debugPrint('[PlayerScreen] HealthMonitor instanciado e iniciado para url: ${widget.url}');
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;

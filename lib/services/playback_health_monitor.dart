@@ -81,10 +81,10 @@ class PlaybackHealthMonitor {
   /// (frequência interna do media_kit, tipicamente bem sub-segundo) — bem
   /// mais frequente do que o watchdog precisa para cumprir seu papel (o
   /// prazo de detecção é [_progressStallTimeout], 10s). Processar TODO tick
-  /// (cancelar+rearmar [_progressStallTimer], mais os debugPrint de
-  /// diagnóstico) é overhead constante durante toda a reprodução saudável,
-  /// não só quando algo dá errado. Só o primeiro tick de cada janela de
-  /// [_positionCheckThrottle] chega a rearmar o timer/logar — os demais
+  /// (cancelar+rearmar [_progressStallTimer]) é overhead constante durante
+  /// toda a reprodução saudável, não só quando algo dá errado. Só o
+  /// primeiro tick de cada janela de [_positionCheckThrottle] chega a
+  /// rearmar o timer — os demais
   /// dentro da mesma janela são ignorados antes de qualquer trabalho (ver
   /// [_positionCheckCooldown]/[_onPositionChanged]). Isso NÃO muda quando um
   /// stall é considerado detectado (ainda [_progressStallTimeout] sem
@@ -99,11 +99,6 @@ class PlaybackHealthMonitor {
   Timer? _stallTimer;
   Timer? _progressStallTimer;
   Timer? _retryTimer;
-
-  /// Última posição recebida de `player.stream.position` — `null` até o
-  /// primeiro tick, para não tratar esse primeiro tick como "posição
-  /// parada" por falta de uma posição anterior pra comparar.
-  Duration? _lastKnownPosition;
 
   /// Janela de "cooldown" do throttle de [_onPositionChanged] — não-nulo
   /// enquanto um tick recente já foi processado há menos de
@@ -151,14 +146,7 @@ class PlaybackHealthMonitor {
   void onUserPlay() => _userPaused = false;
 
   void start() {
-    // DIAGNÓSTICO TEMPORÁRIO (ver instrumentação pedida para investigar o
-    // caso de Wi-Fi caindo em Windows sem overlay nenhum aparecer) —
-    // remover depois que a causa raiz for confirmada e corrigida.
-    debugPrint('[HealthMonitor] start() chamado, fallbackUrls: $fallbackUrls');
-    _errorSub = player.stream.error.listen((error) {
-      debugPrint('[HealthMonitor] error recebido: $error');
-      _handleFailure();
-    });
+    _errorSub = player.stream.error.listen((_) => _handleFailure());
     _bufferingSub = player.stream.buffering.listen(_onBufferingChanged);
     _positionSub = player.stream.position.listen(_onPositionChanged);
   }
@@ -190,95 +178,50 @@ class PlaybackHealthMonitor {
     if (_disposed || _failedDefinitively) return;
 
     // Throttle (item 3 de performance): descarta ticks demais frequentes
-    // antes de qualquer trabalho (log, comparar/atualizar
-    // [_lastKnownPosition], cancelar/rearmar timer) — ver
-    // [_positionCheckThrottle]. Mantém a mesma ordem de antes (log compara
-    // com o [_lastKnownPosition] ANTERIOR antes de sobrescrevê-lo) pelos
-    // ticks que passam do throttle.
+    // antes de qualquer trabalho (comparar/atualizar [_lastKnownPosition],
+    // cancelar/rearmar timer) — ver [_positionCheckThrottle].
     if (_positionCheckCooldown != null) return;
     _positionCheckCooldown = Timer(_positionCheckThrottle, () => _positionCheckCooldown = null);
 
-    debugPrint('[HealthMonitor] position tick: $position (última: $_lastKnownPosition)');
-    _lastKnownPosition = position;
-    _cancelProgressStallTimer('novo tick de posição');
+    _cancelProgressStallTimer();
 
-    if (_userPaused) {
-      debugPrint('[HealthMonitor] _onPositionChanged: _userPaused=true, timer NÃO armado');
-      return;
-    }
+    if (_userPaused) return;
 
-    debugPrint('[HealthMonitor] _progressStallTimer ARMADO (${_progressStallTimeout.inSeconds}s) a partir do tick $position');
     _progressStallTimer = Timer(_progressStallTimeout, () {
-      // DIAGNÓSTICO TEMPORÁRIO (investigação de "silêncio total" no
-      // watchdog de posição durante queda de Wi-Fi) — try/catch pra
-      // garantir que uma exceção aqui dentro apareça no console em vez de
-      // ser engolida silenciosamente (Timer não propaga exceções pra
-      // lugar nenhum por padrão). Remover junto com os demais debugPrint
-      // depois que a causa raiz for confirmada e corrigida.
-      try {
-        debugPrint('[HealthMonitor] progress stall timer DISPAROU - chamando _handleFailure()');
-        // Confere de novo no momento do disparo (não só na hora de armar):
-        // o usuário pode ter pausado DEPOIS deste tick, sem gerar um novo
-        // tick que cancelasse este timer (pausa real costuma simplesmente
-        // parar de emitir posição, não emitir um último tick).
-        if (_disposed || _failedDefinitively || _userPaused) {
-          debugPrint(
-            '[HealthMonitor] progress stall timer disparou mas foi IGNORADO pelo guard '
-            '(disposed=$_disposed, failedDefinitively=$_failedDefinitively, '
-            'userPaused=$_userPaused)',
-          );
-          return;
-        }
-        debugPrint(
-          '[HealthMonitor] progress stall detectado - nenhum tick de posição em ${_progressStallTimeout.inSeconds}s',
-        );
-        _handleFailure();
-      } catch (e, stack) {
-        debugPrint('[HealthMonitor] EXCEÇÃO dentro do callback do progress stall timer: $e\n$stack');
-      }
+      // Confere de novo no momento do disparo (não só na hora de armar): o
+      // usuário pode ter pausado DEPOIS deste tick, sem gerar um novo tick
+      // que cancelasse este timer (pausa real costuma simplesmente parar de
+      // emitir posição, não emitir um último tick).
+      if (_disposed || _failedDefinitively || _userPaused) return;
+      _handleFailure();
     });
   }
 
-  /// Cancela [_progressStallTimer], se houver um em andamento, logando de
-  /// onde partiu a chamada — DIAGNÓSTICO TEMPORÁRIO (investigação de
-  /// "silêncio total" no watchdog de posição) para confirmar se algum
-  /// lugar inesperado está cancelando este timer. Remover junto com os
-  /// demais debugPrint depois que a causa raiz for confirmada e corrigida.
-  void _cancelProgressStallTimer(String origin) {
+  /// Cancela [_progressStallTimer], se houver um em andamento.
+  void _cancelProgressStallTimer() {
     if (_progressStallTimer == null) return;
-    debugPrint('[HealthMonitor] _progressStallTimer CANCELADO (origem: $origin)');
     _progressStallTimer!.cancel();
     _progressStallTimer = null;
   }
 
   void _onBufferingChanged(bool buffering) {
-    debugPrint('[HealthMonitor] buffering mudou para: $buffering');
     if (_disposed || _failedDefinitively) return;
 
-    final hadPendingStallTimer = _stallTimer != null;
     _stallTimer?.cancel();
 
     if (buffering) {
-      debugPrint('[HealthMonitor] stall timer iniciado (15s)');
-      _stallTimer = Timer(_stallTimeout, () {
-        debugPrint('[HealthMonitor] stall timer disparou - buffering ainda true');
-        _handleFailure();
-      });
+      _stallTimer = Timer(_stallTimeout, _handleFailure);
     } else {
-      if (hadPendingStallTimer) {
-        debugPrint('[HealthMonitor] stall timer cancelado - buffering voltou a false');
-      }
       _stallTimer = null;
     }
   }
 
   void _handleFailure() {
-    debugPrint('[HealthMonitor] _handleFailure chamado, retryCount=$_retryCount, urlIndex=$_currentUrlIndex');
     if (_disposed || _failedDefinitively || _retryScheduled) return;
 
     _stallTimer?.cancel();
     _stallTimer = null;
-    _cancelProgressStallTimer('_handleFailure (falha real sendo processada)');
+    _cancelProgressStallTimer();
 
     if (_retryCount < _maxRetriesPerUrl) {
       // Indexa o delay com o valor ANTES de incrementar (0, 1, 2 -> 2s, 4s,
@@ -288,25 +231,14 @@ class PlaybackHealthMonitor {
       final delay = _backoffDelays[_retryCount];
       _retryCount++;
       _retryScheduled = true;
-      _phase = HealthMonitorPhase.retrying;
+      _setPhase(HealthMonitorPhase.retrying, 'retry $_retryCount/$_maxRetriesPerUrl na URL atual');
       onStatusChange('Reconectando... (tentativa $_retryCount)');
 
       _retryTimer = Timer(delay, () {
         _retryScheduled = false;
         if (_disposed || _failedDefinitively) return;
         final url = fallbackUrls[_currentUrlIndex];
-        // DIAGNÓSTICO TEMPORÁRIO (investigação de travamento da janela ao
-        // cair o Wi-Fi durante reprodução) — `whenComplete` só observa o
-        // fim da Future (sucesso ou erro), sem alterar o `unawaited`
-        // fire-and-forget original nem engolir uma exceção que antes
-        // vazaria. Remover junto com os demais debugPrint depois que a
-        // causa raiz for confirmada e corrigida.
-        debugPrint('[HealthMonitor] ${DateTime.now()} player.open() START (retry) url=$url');
-        unawaited(
-          player.open(Media(url)).whenComplete(() {
-            debugPrint('[HealthMonitor] ${DateTime.now()} player.open() END (retry) url=$url');
-          }),
-        );
+        unawaited(player.open(Media(url)));
       });
       return;
     }
@@ -314,15 +246,26 @@ class PlaybackHealthMonitor {
     if (_currentUrlIndex < fallbackUrls.length - 1) {
       _currentUrlIndex++;
       _retryCount = 0;
-      _phase = HealthMonitorPhase.retrying;
+      _setPhase(HealthMonitorPhase.retrying, 'fallback -> URL ${_currentUrlIndex + 1}/${fallbackUrls.length}');
       onStatusChange('Tentando qualidade alternativa...');
       onUrlSwitch(fallbackUrls[_currentUrlIndex]);
       return;
     }
 
     _failedDefinitively = true;
-    _phase = HealthMonitorPhase.failed;
+    _setPhase(HealthMonitorPhase.failed, 'cadeia de fallback esgotada');
     onStatusChange('Falha definitiva');
+  }
+
+  /// Atualiza [_phase] e, em builds debug, registra a transição — único
+  /// logging mantido após a limpeza da instrumentação de diagnóstico:
+  /// eventos discretos de mudança de fase / início de fallback, nunca por
+  /// tick (heartbeat e tick de posição foram removidos por completo).
+  void _setPhase(HealthMonitorPhase phase, String reason) {
+    _phase = phase;
+    if (kDebugMode) {
+      debugPrint('[HealthMonitor] fase -> $phase ($reason)');
+    }
   }
 
   /// Zera o ciclo de retry/fallback — chamado quando o usuário troca de
@@ -333,10 +276,9 @@ class PlaybackHealthMonitor {
     _retryTimer = null;
     _stallTimer?.cancel();
     _stallTimer = null;
-    _cancelProgressStallTimer('reset()');
+    _cancelProgressStallTimer();
     _positionCheckCooldown?.cancel();
     _positionCheckCooldown = null;
-    _lastKnownPosition = null;
     _currentUrlIndex = 0;
     _retryCount = 0;
     _retryScheduled = false;
@@ -348,7 +290,7 @@ class PlaybackHealthMonitor {
     _disposed = true;
     _retryTimer?.cancel();
     _stallTimer?.cancel();
-    _cancelProgressStallTimer('dispose()');
+    _cancelProgressStallTimer();
     _positionCheckCooldown?.cancel();
     unawaited(_errorSub?.cancel());
     unawaited(_bufferingSub?.cancel());

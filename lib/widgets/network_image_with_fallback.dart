@@ -21,8 +21,19 @@ class NetworkImageWithFallback extends StatelessWidget {
 
   /// Redimensiona a decodificação para perto do tamanho de exibição (em
   /// pixels físicos) em vez da resolução original da imagem — evita o jank
-  /// comum de grids com muitas capas de alta resolução.
+  /// comum de grids com muitas capas de alta resolução, e reduz a pressão
+  /// de memória do `ImageCache` (relevante sobretudo em Android TV, com RAM
+  /// mais limitada que celular/desktop).
   final int? cacheWidth;
+
+  /// Contraparte de [cacheWidth] para o eixo vertical — útil sobretudo em
+  /// caixas de tamanho fixo (ex: logo de canal em círculo/quadrado, ver
+  /// `_StreamThumb`), onde a imagem de origem pode não ter a mesma
+  /// proporção da caixa exibida: sem isto, o decoder infere a altura pela
+  /// proporção ORIGINAL da imagem (só a partir de [cacheWidth]), o que pode
+  /// decodificar mais pixels do que a caixa (com `BoxFit.cover`) realmente
+  /// aproveita.
+  final int? cacheHeight;
 
   const NetworkImageWithFallback({
     super.key,
@@ -32,6 +43,7 @@ class NetworkImageWithFallback extends StatelessWidget {
     this.width,
     this.height,
     this.cacheWidth,
+    this.cacheHeight,
   });
 
   @override
@@ -44,6 +56,7 @@ class NetworkImageWithFallback extends StatelessWidget {
       height: height,
       fit: fit,
       cacheWidth: cacheWidth,
+      cacheHeight: cacheHeight,
       errorBuilder: (context, error, stackTrace) => fallback,
       frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
         if (wasSynchronouslyLoaded) return child;

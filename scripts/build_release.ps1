@@ -13,8 +13,9 @@
       2. Roda flutter analyze e flutter test -- aborta o script se algum dos
          dois falhar (nao builda release em cima de codigo quebrado).
       3. Cria releases/<versao>/android/ e releases/<versao>/windows/.
-      4. flutter build apk --release, copia o APK para
-         releases/<versao>/android/BarclayFlix-<versao>.apk.
+      4. flutter build apk --release --split-per-abi, copia CADA APK gerado
+         (um por ABI -- tipicamente armeabi-v7a, arm64-v8a e x86_64) para
+         releases/<versao>/android/BarclayFlix-<versao>-<abi>.apk.
       5. flutter build windows --release, copia TODO o conteudo de
          build/windows/x64/runner/Release/ (.exe + DLLs necessarias) para
          releases/<versao>/windows/.
@@ -149,10 +150,13 @@ $windowsDir = Join-Path $releaseDir 'windows'
 New-Item -ItemType Directory -Force -Path $androidDir | Out-Null
 New-Item -ItemType Directory -Force -Path $windowsDir | Out-Null
 
-# 4. Build Android -- release, copia e renomeia.
-Write-Step 'flutter build apk --release'
+# 4. Build Android -- release, split por ABI (um .apk por arquitetura em vez
+# de um unico .apk universal -- reduz bastante o tamanho de cada download),
+# copia e renomeia CADA .apk gerado.
+Write-Step 'flutter build apk --release --split-per-abi'
 $androidOk = $true
 $androidError = $null
+$androidApkPaths = @()
 try {
     # $ErrorActionPreference = 'Stop' (topo do script) faz o PowerShell 5.1
     # tratar QUALQUER linha que o processo nativo escreva em stderr como um
@@ -168,15 +172,34 @@ try {
     # $ErrorActionPreference volta a 'Stop' logo em seguida.
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    flutter build apk --release $appsScriptUrlDefine
+    flutter build apk --release --split-per-abi $appsScriptUrlDefine
     $ErrorActionPreference = $previousErrorActionPreference
     if ($LASTEXITCODE -ne 0) {
-        throw "flutter build apk --release terminou com exit code $LASTEXITCODE"
+        throw "flutter build apk --release --split-per-abi terminou com exit code $LASTEXITCODE"
     }
-    $apkSource = Join-Path $root 'build\app\outputs\flutter-apk\app-release.apk'
-    $apkDest = Join-Path $androidDir "BarclayFlix-$version.apk"
-    Copy-Item -Path $apkSource -Destination $apkDest -Force
-    Write-Host "APK copiado para $apkDest" -ForegroundColor Green
+
+    # --split-per-abi gera um app-<abi>-release.apk por arquitetura em vez do
+    # unico app-release.apk de antes (ex: app-armeabi-v7a-release.apk,
+    # app-arm64-v8a-release.apk, app-x86_64-release.apk) -- todos assinados
+    # com o MESMO signingConfig da buildType `release` (ver
+    # android/app/build.gradle.kts), aplicado pelo Android Gradle Plugin a
+    # cada .apk de saida da variante, nao so ao primeiro.
+    $apkSourceDir = Join-Path $root 'build\app\outputs\flutter-apk'
+    $apkFiles = Get-ChildItem -Path $apkSourceDir -Filter 'app-*-release.apk' | Sort-Object Name
+    if ($apkFiles.Count -eq 0) {
+        throw "Nenhum .apk encontrado em $apkSourceDir apos o build com --split-per-abi."
+    }
+    foreach ($apkFile in $apkFiles) {
+        if ($apkFile.Name -match '^app-(.+)-release\.apk$') {
+            $abi = $matches[1]
+        } else {
+            $abi = $apkFile.BaseName
+        }
+        $apkDest = Join-Path $androidDir "BarclayFlix-$version-$abi.apk"
+        Copy-Item -Path $apkFile.FullName -Destination $apkDest -Force
+        $androidApkPaths += $apkDest
+        Write-Host "APK copiado para $apkDest" -ForegroundColor Green
+    }
 } catch {
     $ErrorActionPreference = $previousErrorActionPreference
     $androidOk = $false
@@ -214,7 +237,10 @@ try {
 Write-Host "`n========== RESUMO ==========" -ForegroundColor Cyan
 Write-Host "Versao: $version"
 if ($androidOk) {
-    Write-Host "Android: OK -> $androidDir\BarclayFlix-$version.apk" -ForegroundColor Green
+    Write-Host "Android: OK -> $($androidApkPaths.Count) APK(s):" -ForegroundColor Green
+    foreach ($apkPath in $androidApkPaths) {
+        Write-Host "  - $apkPath" -ForegroundColor Green
+    }
 } else {
     Write-Host "Android: FALHOU -- $androidError" -ForegroundColor Red
 }
