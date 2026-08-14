@@ -66,6 +66,21 @@ class XtreamApiService {
     return asMapList(data).map(LiveStream.fromJson).toList();
   }
 
+  /// `action=get_short_epg` + `stream_id` — programação "agora"/"a seguir"
+  /// de um canal (até [limit] itens; painel decide o que "a seguir"
+  /// significa, normalmente 1-4). Chamada SOB DEMANDA, por canal (ver
+  /// `_EpgSubtitle` em home_screen.dart) -- nunca em lote para todos os
+  /// canais de uma categoria de uma vez, que seria uma explosão de
+  /// chamadas de rede.
+  Future<List<EpgProgram>> getShortEpg(String streamId, {int limit = 2}) async {
+    final data = await _getJson({
+      'action': 'get_short_epg',
+      'stream_id': streamId,
+      'limit': limit.toString(),
+    });
+    return asMapList(asMap(data)['epg_listings']).map(EpgProgram.fromJson).toList();
+  }
+
   // ---------------------------------------------------------------------
   // VOD (filmes)
   // ---------------------------------------------------------------------
@@ -84,6 +99,16 @@ class XtreamApiService {
       'category_id': ?categoryId,
     });
     return asMapList(data).map(VodStream.fromJson).toList();
+  }
+
+  /// `action=get_vod_info` + `vod_id` — detalhes de um filme (sinopse,
+  /// elenco, duração etc.), ausentes de [getVodStreams] (listagem).
+  Future<VodInfo> getVodInfo(String vodId) async {
+    final data = await _getJson({
+      'action': 'get_vod_info',
+      'vod_id': vodId,
+    });
+    return VodInfo.fromJson(asMap(data));
   }
 
   // ---------------------------------------------------------------------

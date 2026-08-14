@@ -15,6 +15,7 @@ import 'package:iptv_app/data/services/device_auth_service.dart';
 import 'package:iptv_app/data/services/storage_service.dart';
 import 'package:iptv_app/providers/auth_provider.dart';
 import 'package:iptv_app/providers/profiles_provider.dart';
+import 'package:iptv_app/providers/settings_provider.dart';
 import 'package:iptv_app/screens/activation/activation_screen.dart';
 import 'package:iptv_app/screens/home/home_screen.dart';
 import 'package:iptv_app/screens/splash/splash_screen.dart';
@@ -101,6 +102,11 @@ Future<void> pumpSplashScreen(
         ChangeNotifierProvider<AuthProvider>.value(value: authProvider),
         ChangeNotifierProvider<ProfilesProvider>(
           create: (_) => ProfilesProvider(authProvider: authProvider, storageService: storageService),
+        ),
+        // HomeScreen (alcançável daqui quando já existe perfil salvo) lê
+        // SettingsProvider assim que renderiza.
+        ChangeNotifierProvider<SettingsProvider>(
+          create: (_) => SettingsProvider(storageService: storageService)..load(),
         ),
       ],
       child: const MaterialApp(home: SplashScreen()),

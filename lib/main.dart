@@ -10,6 +10,8 @@ import 'core/theme/app_theme.dart';
 import 'providers/auth_provider.dart';
 import 'providers/profiles_provider.dart';
 import 'providers/series_details_provider.dart';
+import 'providers/settings_provider.dart';
+import 'providers/vod_details_provider.dart';
 import 'screens/splash/splash_screen.dart';
 
 Future<void> main() async {
@@ -51,6 +53,8 @@ class IptvApp extends StatelessWidget {
               ProfilesProvider(authProvider: context.read<AuthProvider>()),
         ),
         ChangeNotifierProvider(create: (_) => SeriesDetailsProvider()),
+        ChangeNotifierProvider(create: (_) => VodDetailsProvider()),
+        ChangeNotifierProvider(create: (_) => SettingsProvider()..load()),
       ],
       child: MaterialApp(
         title: 'BarclayFlix 2.0',

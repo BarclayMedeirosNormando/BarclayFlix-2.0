@@ -136,6 +136,50 @@ void main() {
 
       await service.getLiveStreams();
     });
+
+    test('getShortEpg decodifica title (base64) e envia stream_id/limit', () async {
+      final service = _buildService((request) async {
+        expect(request.url.queryParameters['action'], 'get_short_epg');
+        expect(request.url.queryParameters['stream_id'], '10001');
+        expect(request.url.queryParameters['limit'], '2');
+        return _jsonResponse({
+          'epg_listings': [
+            {
+              'title': base64Encode(utf8.encode('Jornal da Noite')),
+              'start_timestamp': '1690000000',
+              'stop_timestamp': '1690003600',
+            },
+            {
+              'title': base64Encode(utf8.encode('Filme da Madrugada')),
+              'start_timestamp': '1690003600',
+              'stop_timestamp': '1690010800',
+            },
+          ],
+        });
+      });
+
+      final programs = await service.getShortEpg('10001');
+
+      expect(programs, hasLength(2));
+      expect(programs[0].title, 'Jornal da Noite');
+      expect(programs[0].start, DateTime.fromMillisecondsSinceEpoch(1690000000 * 1000));
+      expect(programs[1].title, 'Filme da Madrugada');
+    });
+
+    test('getShortEpg cai pro texto original quando title não é base64 válido', () async {
+      final service = _buildService((request) async {
+        return _jsonResponse({
+          'epg_listings': [
+            {'title': 'Texto puro sem encoding', 'start_timestamp': '0', 'stop_timestamp': '0'},
+          ],
+        });
+      });
+
+      final programs = await service.getShortEpg('10001');
+
+      expect(programs.single.title, 'Texto puro sem encoding');
+      expect(programs.single.start, isNull);
+    });
   });
 
   group('VOD (filmes)', () {
@@ -177,6 +221,33 @@ void main() {
       expect(movie.name, 'Matrix');
       expect(movie.containerExtension, 'mkv');
       expect(movie.rating, 8.7);
+    });
+
+    test('getVodInfo retorna os metadados parseados', () async {
+      final service = _buildService((request) async {
+        expect(request.url.queryParameters['action'], 'get_vod_info');
+        expect(request.url.queryParameters['vod_id'], '5001');
+        return _jsonResponse({
+          'info': {
+            'plot': 'Um hacker descobre a verdade sobre sua realidade.',
+            'cast': 'Keanu Reeves, Laurence Fishburne',
+            'director': 'Wachowski',
+            'genre': 'Ficção científica',
+            'releaseDate': '1999-03-31',
+            'rating': '8.7',
+            'duration_secs': 8160,
+          },
+          'movie_data': {'stream_id': 5001},
+        });
+      });
+
+      final vodInfo = await service.getVodInfo('5001');
+
+      expect(vodInfo.info.plot, 'Um hacker descobre a verdade sobre sua realidade.');
+      expect(vodInfo.info.cast, 'Keanu Reeves, Laurence Fishburne');
+      expect(vodInfo.info.genre, 'Ficção científica');
+      expect(vodInfo.info.rating, 8.7);
+      expect(vodInfo.info.durationSecs, 8160);
     });
   });
 

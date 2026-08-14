@@ -14,6 +14,7 @@ import 'package:iptv_app/data/models/device_login_result.dart';
 import 'package:iptv_app/data/services/storage_service.dart';
 import 'package:iptv_app/providers/auth_provider.dart';
 import 'package:iptv_app/providers/profiles_provider.dart';
+import 'package:iptv_app/providers/settings_provider.dart';
 import 'package:iptv_app/screens/home/home_screen.dart';
 import 'package:iptv_app/screens/server_selection/server_selection_screen.dart';
 
@@ -59,6 +60,9 @@ Future<void> pumpServerSelectionScreen(
             storageService: StorageService(storage: const FlutterSecureStorage()),
           ),
         ),
+        // HomeScreen (alcançável daqui ao escolher um servidor) lê
+        // SettingsProvider assim que renderiza.
+        ChangeNotifierProvider<SettingsProvider>(create: (_) => SettingsProvider()..load()),
       ],
       child: MaterialApp(
         home: ServerSelectionScreen(

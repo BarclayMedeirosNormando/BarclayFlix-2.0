@@ -55,6 +55,25 @@ class LiveStream {
   }
 }
 
+/// Um item de `get_short_epg` (guia de programação) -- "agora" ou "a
+/// seguir" num canal, ver `_EpgSubtitle` em home_screen.dart. `title`
+/// chega em base64 na API Xtream (ver [asBase64String]).
+class EpgProgram {
+  final String title;
+  final DateTime? start;
+  final DateTime? end;
+
+  const EpgProgram({required this.title, required this.start, required this.end});
+
+  factory EpgProgram.fromJson(Map<String, dynamic> json) {
+    return EpgProgram(
+      title: asBase64String(json['title']),
+      start: asUnixDate(json['start_timestamp']),
+      end: asUnixDate(json['stop_timestamp']),
+    );
+  }
+}
+
 /// Filme (`get_vod_streams`).
 class VodStream {
   final int streamId;
@@ -85,6 +104,60 @@ class VodStream {
       rating: asDouble(json['rating']),
       added: asUnixDate(json['added']),
     );
+  }
+}
+
+/// Metadados extras de um filme, dentro de `info` em `get_vod_info` --
+/// ausentes de `get_vod_streams` (listagem), só chegam ao abrir a ficha do
+/// filme (ver VodDetailsProvider/VodDetailsScreen). Mesmos campos de
+/// [SeriesDetails] (plot/cast/director/genre/releaseDate/rating) + duração,
+/// que só faz sentido pra filme (série tem duração por EPISÓDIO, ver
+/// [EpisodeInfo], não pela série inteira).
+class VodDetails {
+  final String plot;
+  final String cast;
+  final String director;
+  final String genre;
+  final String releaseDate;
+  final double rating;
+  final double durationSecs;
+
+  const VodDetails({
+    required this.plot,
+    required this.cast,
+    required this.director,
+    required this.genre,
+    required this.releaseDate,
+    required this.rating,
+    required this.durationSecs,
+  });
+
+  factory VodDetails.fromJson(Map<String, dynamic> json) {
+    return VodDetails(
+      plot: asString(json['plot']),
+      cast: asString(json['cast']),
+      director: asString(json['director']),
+      genre: asString(json['genre']),
+      // Alguns painéis retornam "releaseDate", outros "release_date" (mesma
+      // inconsistência já tratada em SeriesDetails.fromJson).
+      releaseDate: asStringOrNull(json['releaseDate']) ?? asString(json['release_date']),
+      rating: asDouble(json['rating']),
+      durationSecs: asDouble(json['duration_secs']),
+    );
+  }
+}
+
+/// Resposta completa de `get_vod_info`: só os metadados (`info`) importam
+/// aqui -- o objeto irmão `movie_data` da resposta real repete campos que o
+/// app já tem via [VodStream] (vindo da listagem, ver HomeScreen), então não
+/// há necessidade de um segundo model só pra ele.
+class VodInfo {
+  final VodDetails info;
+
+  const VodInfo({required this.info});
+
+  factory VodInfo.fromJson(Map<String, dynamic> json) {
+    return VodInfo(info: VodDetails.fromJson(asMap(json['info'])));
   }
 }
 

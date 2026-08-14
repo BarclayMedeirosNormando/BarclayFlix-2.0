@@ -9,25 +9,39 @@ import '../../core/utils/category_icons.dart';
 import '../../core/utils/channel_quality.dart';
 import '../../data/models/watch_progress.dart';
 import '../../data/models/xtream_models.dart';
+import '../../data/services/xtream_api_service.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/content_provider.dart';
 import '../../providers/continue_watching_provider.dart';
+import '../../providers/favorites_provider.dart';
 import '../../providers/profiles_provider.dart';
+import '../../providers/settings_provider.dart';
 import '../../services/stream_url_builder.dart';
 import '../../widgets/category_filter_header.dart';
 import '../../widgets/dpad_focus_highlight.dart';
 import '../../widgets/network_image_with_fallback.dart';
+import '../../widgets/new_badge.dart';
 import '../../widgets/quality_badge.dart';
 import '../../widgets/skeleton_loader.dart';
 import '../../widgets/state_illustration.dart';
 import '../player/player_screen.dart';
 import '../series_details/series_details_screen.dart';
+import '../settings/settings_screen.dart';
+import '../vod_details/vod_details_screen.dart';
 import '../activation/activation_screen.dart';
 import '../server_selection/server_selection_screen.dart';
 
 /// Abaixo desta largura a seleção de categoria vira uma barra horizontal de
 /// chips no topo; acima disso vira uma sidebar fixa à esquerda.
 const double _sidebarBreakpoint = 700;
+
+/// Janela pra um filme ainda ganhar o selo [NewBadge] (ver `_VodGrid`),
+/// contada a partir de `VodStream.added` (data que o painel Xtream reporta
+/// como "adicionado ao catálogo" -- não é a data de lançamento do filme).
+const Duration _newBadgeWindow = Duration(days: 7);
+
+bool _isRecentlyAdded(DateTime? added) =>
+    added != null && DateTime.now().difference(added) <= _newBadgeWindow;
 
 /// Tela principal pós-login: 4 abas (Live TV, Filmes, Séries, Continuar
 /// Assistindo). As 3 primeiras têm categorias à esquerda/topo e o
@@ -72,6 +86,7 @@ class HomeScreen extends StatelessWidget {
           create: (_) => ContentProvider(apiService: apiService),
         ),
         ChangeNotifierProvider(create: (_) => ContinueWatchingProvider()),
+        ChangeNotifierProvider(create: (_) => FavoritesProvider()),
       ],
       child: const _HomeScreenBody(),
     );
@@ -151,6 +166,7 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _ensureCategoriesLoaded(0);
       context.read<ContinueWatchingProvider>().load();
+      context.read<FavoritesProvider>().load();
     });
     // As categorias da primeira aba chegam de forma assíncrona (rede) —
     // escuta o ContentProvider pra saltar o foco assim que a sidebar/chips
@@ -263,6 +279,15 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
 
   bool get _isCurrentTabSearching => _currentContentTabKey?.currentState?._searching ?? false;
 
+  /// Idem `_toggleCurrentSearch`, pro botão de coração ("só favoritos").
+  void _toggleCurrentFavoritesOnly() {
+    setState(() {
+      _currentContentTabKey?.currentState?._toggleFavoritesOnly();
+    });
+  }
+
+  bool get _isCurrentTabFavoritesOnly => _currentContentTabKey?.currentState?._favoritesOnly ?? false;
+
   /// Botão de atualizar da AppBar: na aba atual, força releitura ignorando
   /// cache (ver `ContentProvider.refresh`); na aba "Continuar Assistindo"
   /// (sem `ContentType`, ver `_currentContentTabKey`), recarrega o
@@ -337,10 +362,23 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
                   tooltip: _isCurrentTabSearching ? 'Fechar busca' : 'Buscar',
                   onPressed: _toggleCurrentSearch,
                 ),
+              if (_currentContentTabKey != null)
+                IconButton(
+                  icon: Icon(_isCurrentTabFavoritesOnly ? Icons.favorite : Icons.favorite_border),
+                  tooltip: _isCurrentTabFavoritesOnly ? 'Mostrar tudo' : 'Só favoritos',
+                  onPressed: _toggleCurrentFavoritesOnly,
+                ),
               IconButton(
                 icon: const Icon(Icons.refresh),
                 tooltip: 'Atualizar',
                 onPressed: () => _refreshCurrent(context),
+              ),
+              IconButton(
+                icon: const Icon(Icons.settings_outlined),
+                tooltip: 'Configurações',
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                ),
               ),
               IconButton(
                 icon: _switchingServer
@@ -383,19 +421,22 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
                   key: _contentTabKeys[ContentType.live.index],
                   type: ContentType.live,
                   searchHintText: 'Buscar canal...',
-                  streamsPanelBuilder: (query) => _LiveStreamsPanel(searchQuery: query),
+                  streamsPanelBuilder: (query, favoritesOnly) =>
+                      _LiveStreamsPanel(searchQuery: query, favoritesOnly: favoritesOnly),
                 ),
                 _ContentTabView(
                   key: _contentTabKeys[ContentType.vod.index],
                   type: ContentType.vod,
                   searchHintText: 'Buscar filme...',
-                  streamsPanelBuilder: (query) => _VodGrid(searchQuery: query),
+                  streamsPanelBuilder: (query, favoritesOnly) =>
+                      _VodGrid(searchQuery: query, favoritesOnly: favoritesOnly),
                 ),
                 _ContentTabView(
                   key: _contentTabKeys[ContentType.series.index],
                   type: ContentType.series,
                   searchHintText: 'Buscar série...',
-                  streamsPanelBuilder: (query) => _SeriesGrid(searchQuery: query),
+                  streamsPanelBuilder: (query, favoritesOnly) =>
+                      _SeriesGrid(searchQuery: query, favoritesOnly: favoritesOnly),
                 ),
                 const _ContinueWatchingTab(),
               ],
@@ -420,7 +461,7 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
 class _ContentTabView extends StatefulWidget {
   final ContentType type;
   final String searchHintText;
-  final Widget Function(String searchQuery) streamsPanelBuilder;
+  final Widget Function(String searchQuery, bool favoritesOnly) streamsPanelBuilder;
 
   const _ContentTabView({
     super.key,
@@ -438,6 +479,7 @@ class _ContentTabViewState extends State<_ContentTabView> {
   late final FocusNode _searchFieldFocusNode = FocusNode(debugLabel: '${widget.type.name}_search_field');
   bool _searching = false;
   String _query = '';
+  bool _favoritesOnly = false;
 
   void _openSearch() {
     setState(() => _searching = true);
@@ -472,6 +514,11 @@ class _ContentTabViewState extends State<_ContentTabView> {
     } else {
       _openSearch();
     }
+  }
+
+  /// Idem acima, mas pro botão de coração ("só favoritos") da AppBar.
+  void _toggleFavoritesOnly() {
+    setState(() => _favoritesOnly = !_favoritesOnly);
   }
 
   @override
@@ -511,14 +558,14 @@ class _ContentTabViewState extends State<_ContentTabView> {
                   children: [
                     SizedBox(width: 260, child: header),
                     const VerticalDivider(width: 1),
-                    Expanded(child: widget.streamsPanelBuilder(_query)),
+                    Expanded(child: widget.streamsPanelBuilder(_query, _favoritesOnly)),
                   ],
                 )
               : Column(
                   children: [
                     header,
                     const Divider(height: 1),
-                    Expanded(child: widget.streamsPanelBuilder(_query)),
+                    Expanded(child: widget.streamsPanelBuilder(_query, _favoritesOnly)),
                   ],
                 ),
         );
@@ -608,6 +655,8 @@ class _CategoriesSidebar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final settings = context.watch<SettingsProvider>();
+
     return Consumer<ContentProvider>(
       builder: (context, provider, _) {
         final status = provider.categoriesStatusFor(type);
@@ -644,6 +693,14 @@ class _CategoriesSidebar extends StatelessWidget {
           itemBuilder: (context, index) {
             final category = categories[index];
             final selected = category.id == selectedId;
+            // "Todos" (ver ContentProvider.allCategoriesId) nunca é
+            // travável -- ela já agrega o conteúdo de TODAS as categorias
+            // reais numa chamada só, então "proteger" ela sozinha não
+            // protegeria nada de verdade (o filtro em
+            // _LiveStreamsPanel/_VodGrid/_SeriesGrid cuida de tirar os itens
+            // de categorias travadas de dentro dela).
+            final lockable = category.id != ContentProvider.allCategoriesId;
+            final protectedCategory = lockable && settings.isProtectedCategory(type, category.id);
 
             return DpadFocusHighlight(
               key: ValueKey('sidebar_category_${type.name}_${category.id}'),
@@ -671,10 +728,17 @@ class _CategoriesSidebar extends StatelessWidget {
                         : Colors.grey.shade400,
                   ),
                   title: Text(category.name, overflow: TextOverflow.ellipsis),
-                  onTap: () => context.read<ContentProvider>().selectCategory(
-                    type,
-                    category.id,
-                  ),
+                  trailing: (lockable && settings.hasPin)
+                      ? GestureDetector(
+                          onTap: () => _toggleCategoryLock(context, type, category.id),
+                          child: Icon(
+                            protectedCategory ? Icons.lock : Icons.lock_open,
+                            size: 18,
+                            color: protectedCategory ? AppTheme.primaryColor : Colors.grey.shade500,
+                          ),
+                        )
+                      : null,
+                  onTap: () => _selectCategoryGated(context, type, category.id),
                 ),
               ),
             );
@@ -692,6 +756,8 @@ class _CategoriesChips extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final settings = context.watch<SettingsProvider>();
+
     return Consumer<ContentProvider>(
       builder: (context, provider, _) {
         final status = provider.categoriesStatusFor(type);
@@ -743,6 +809,10 @@ class _CategoriesChips extends StatelessWidget {
             itemBuilder: (context, index) {
               final category = categories[index];
               final selected = category.id == selectedId;
+              // Mesmo raciocínio de _CategoriesSidebar: "Todos" nunca é
+              // travável.
+              final lockable = category.id != ContentProvider.allCategoriesId;
+              final protectedCategory = lockable && settings.isProtectedCategory(type, category.id);
 
               return DpadFocusHighlight(
                 key: ValueKey('chip_category_${type.name}_${category.id}'),
@@ -750,11 +820,25 @@ class _CategoriesChips extends StatelessWidget {
                 borderRadius: BorderRadius.circular(20),
                 builder: (context, focusNode, hasFocus) => ChoiceChip(
                   focusNode: focusNode,
-                  label: Text(category.name),
+                  label: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(category.name),
+                      if (lockable && settings.hasPin) ...[
+                        const SizedBox(width: 6),
+                        GestureDetector(
+                          onTap: () => _toggleCategoryLock(context, type, category.id),
+                          child: Icon(
+                            protectedCategory ? Icons.lock : Icons.lock_open,
+                            size: 14,
+                            color: protectedCategory ? AppTheme.primaryColor : Colors.grey.shade500,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
                   selected: selected,
-                  onSelected: (_) => context
-                      .read<ContentProvider>()
-                      .selectCategory(type, category.id),
+                  onSelected: (_) => _selectCategoryGated(context, type, category.id),
                 ),
               );
             },
@@ -775,13 +859,23 @@ class _LiveStreamsPanel extends StatelessWidget {
   /// (ver _LiveTabView/_LiveSearchField).
   final String searchQuery;
 
-  const _LiveStreamsPanel({this.searchQuery = ''});
+  /// Quando true, mostra só os canais favoritados (ver botão de coração da
+  /// AppBar em _HomeScreenBodyState).
+  final bool favoritesOnly;
+
+  const _LiveStreamsPanel({this.searchQuery = '', this.favoritesOnly = false});
 
   @override
   Widget build(BuildContext context) {
     return Consumer<ContentProvider>(
       builder: (context, provider, _) {
         final state = provider.live;
+        final favorites = context.watch<FavoritesProvider>();
+        final settings = context.watch<SettingsProvider>();
+        // Lido uma vez aqui (não dentro do itemBuilder da lista) e repassado
+        // pronto pra cada _EpgSubtitle -- evita um context.read novo por
+        // linha a cada rebuild da lista inteira.
+        final apiService = context.read<AuthProvider>().apiService;
 
         if (state.selectedCategoryId == null) {
           return const _EmptyHint(
@@ -815,16 +909,29 @@ class _LiveStreamsPanel extends StatelessWidget {
         }
 
         final query = searchQuery.trim().toLowerCase();
-        final filtered = query.isEmpty
+        var filtered = query.isEmpty
             ? state.streams
             : state.streams
                 .where((channel) => channel.name.toLowerCase().contains(query))
                 .toList();
+        if (favoritesOnly) {
+          filtered = filtered
+              .where((channel) => favorites.isFavorite(ContentType.live, channel.streamId.toString()))
+              .toList();
+        }
+        // Tira os canais de categorias travadas -- essencial em "Todos"
+        // (que agrega tudo numa chamada só, ver ContentProvider), senão o
+        // cadeado da categoria não protegeria nada de verdade ali.
+        filtered = filtered.where((channel) => !settings.isLocked(ContentType.live, channel.categoryId)).toList();
 
         if (filtered.isEmpty) {
           return _EmptyHint(
-            icon: Icons.search_off,
-            message: 'Nenhum canal encontrado para "${searchQuery.trim()}".',
+            icon: favoritesOnly ? Icons.favorite_border : Icons.search_off,
+            message: switch ((favoritesOnly, query.isEmpty)) {
+              (true, true) => 'Nenhum canal favoritado ainda.',
+              (true, false) => 'Nenhum canal favoritado encontrado para "${searchQuery.trim()}".',
+              (false, _) => 'Nenhum canal encontrado para "${searchQuery.trim()}".',
+            },
           );
         }
 
@@ -860,6 +967,7 @@ class _LiveStreamsPanel extends StatelessWidget {
                     (context, index) {
                       final channel = cardChannels[index];
                       final quality = parseChannelQuality(channel.name)!;
+                      final channelId = channel.streamId.toString();
 
                       return DpadFocusHighlight(
                         key: ValueKey('live_stream_card_${channel.streamId}'),
@@ -871,6 +979,9 @@ class _LiveStreamsPanel extends StatelessWidget {
                           rating: 0,
                           titleStyle: AppTheme.liveChannelNameStyle,
                           topLeftBadge: QualityBadge(quality: quality),
+                          isFavorite: favorites.isFavorite(ContentType.live, channelId),
+                          onToggleFavorite: () =>
+                              context.read<FavoritesProvider>().toggleFavorite(ContentType.live, channelId),
                           onTap: () => _playLiveChannel(context, channel),
                         ),
                       );
@@ -886,6 +997,8 @@ class _LiveStreamsPanel extends StatelessWidget {
                   delegate: SliverChildBuilderDelegate(
                     (context, index) {
                       final channel = listChannels[index];
+                      final channelId = channel.streamId.toString();
+                      final isFavorite = favorites.isFavorite(ContentType.live, channelId);
 
                       return DpadFocusHighlight(
                         key: ValueKey('live_stream_${channel.streamId}'),
@@ -916,9 +1029,29 @@ class _LiveStreamsPanel extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                             style: AppTheme.liveChannelNameStyle,
                           ),
-                          trailing: channel.tvArchive
-                              ? const Icon(Icons.replay_circle_filled_outlined, size: 18)
-                              : null,
+                          subtitle: apiService == null
+                              ? null
+                              : _EpgSubtitle(apiService: apiService, streamId: channel.streamId),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (channel.tvArchive)
+                                const Padding(
+                                  padding: EdgeInsets.only(right: 8),
+                                  child: Icon(Icons.replay_circle_filled_outlined, size: 18),
+                                ),
+                              GestureDetector(
+                                onTap: () => context
+                                    .read<FavoritesProvider>()
+                                    .toggleFavorite(ContentType.live, channelId),
+                                child: Icon(
+                                  isFavorite ? Icons.favorite : Icons.favorite_border,
+                                  size: 18,
+                                  color: isFavorite ? AppTheme.primaryColor : null,
+                                ),
+                              ),
+                            ],
+                          ),
                           onTap: () => _playLiveChannel(context, channel),
                         ),
                       );
@@ -944,13 +1077,20 @@ class _VodGrid extends StatelessWidget {
   /// chamada de rede nova.
   final String searchQuery;
 
-  const _VodGrid({this.searchQuery = ''});
+  /// Quando true, mostra só os filmes favoritados (ver botão de coração da
+  /// AppBar em _HomeScreenBodyState) -- outro filtro local, composto com
+  /// [searchQuery] em cima do mesmo [TabState.streams] já carregado.
+  final bool favoritesOnly;
+
+  const _VodGrid({this.searchQuery = '', this.favoritesOnly = false});
 
   @override
   Widget build(BuildContext context) {
     return Consumer<ContentProvider>(
       builder: (context, provider, _) {
         final state = provider.vod;
+        final favorites = context.watch<FavoritesProvider>();
+        final settings = context.watch<SettingsProvider>();
 
         if (state.selectedCategoryId == null) {
           return const _EmptyHint(
@@ -980,41 +1120,83 @@ class _VodGrid extends StatelessWidget {
         }
 
         final query = searchQuery.trim().toLowerCase();
-        final movies = query.isEmpty
+        var movies = query.isEmpty
             ? state.streams
             : state.streams.where((movie) => movie.name.toLowerCase().contains(query)).toList();
+        if (favoritesOnly) {
+          movies = movies
+              .where((movie) => favorites.isFavorite(ContentType.vod, movie.streamId.toString()))
+              .toList();
+        }
+        // Mesmo raciocínio de _LiveStreamsPanel: essencial em "Todos".
+        movies = movies.where((movie) => !settings.isLocked(ContentType.vod, movie.categoryId)).toList();
 
         if (movies.isEmpty) {
           return _EmptyHint(
-            icon: Icons.search_off,
-            message: 'Nenhum filme encontrado para "${searchQuery.trim()}".',
+            icon: favoritesOnly ? Icons.favorite_border : Icons.search_off,
+            message: switch ((favoritesOnly, query.isEmpty)) {
+              (true, true) => 'Nenhum filme favoritado ainda.',
+              (true, false) => 'Nenhum filme favoritado encontrado para "${searchQuery.trim()}".',
+              (false, _) => 'Nenhum filme encontrado para "${searchQuery.trim()}".',
+            },
           );
         }
 
-        return GridView.builder(
-          padding: const EdgeInsets.all(AppSpacing.m),
+        // Destaque só faz sentido em cima da lista "inteira" da categoria
+        // (sem filtro nenhum aplicado ainda) -- durante busca/"só
+        // favoritos", mostrar um "destaque" que pode nem bater com o filtro
+        // seria estranho (ver _FeaturedBanner).
+        final featured = (!favoritesOnly && query.isEmpty)
+            ? movies.reduce((a, b) => b.rating > a.rating ? b : a)
+            : null;
+
+        return CustomScrollView(
           // VOD/Séries podem ter centenas de itens por categoria — um
           // cacheExtent moderado mantém uma folga de linhas pré-construídas
           // fora da viewport (rolagem mais suave, menos rebuild a cada
           // frame) sem carregar imagens demais de uma vez.
           scrollCacheExtent: const ScrollCacheExtent.pixels(500),
-          gridDelegate: AppCardSizes.posterGridDelegate,
-          itemCount: movies.length,
-          itemBuilder: (context, index) {
-            final movie = movies[index];
-
-            return DpadFocusHighlight(
-              key: ValueKey('vod_stream_${movie.streamId}'),
-              builder: (context, focusNode, hasFocus) => _PosterCard(
-                focusNode: focusNode,
-                title: movie.name,
-                imageUrl: movie.streamIcon,
-                fallbackIcon: Icons.movie,
-                rating: movie.rating,
-                onTap: () => _playMovie(context, movie),
+          slivers: [
+            if (featured != null)
+              SliverToBoxAdapter(
+                child: _FeaturedBanner(
+                  title: featured.name,
+                  imageUrl: featured.streamIcon,
+                  rating: featured.rating,
+                  fallbackIcon: Icons.movie,
+                  onTap: () => _openVodDetails(context, featured),
+                ),
               ),
-            );
-          },
+            SliverPadding(
+              padding: const EdgeInsets.all(AppSpacing.m),
+              sliver: SliverGrid(
+                gridDelegate: AppCardSizes.posterGridDelegate,
+                delegate: SliverChildBuilderDelegate(
+                  (context, index) {
+                    final movie = movies[index];
+                    final movieId = movie.streamId.toString();
+
+                    return DpadFocusHighlight(
+                      key: ValueKey('vod_stream_${movie.streamId}'),
+                      builder: (context, focusNode, hasFocus) => _PosterCard(
+                        focusNode: focusNode,
+                        title: movie.name,
+                        imageUrl: movie.streamIcon,
+                        fallbackIcon: Icons.movie,
+                        rating: movie.rating,
+                        topLeftBadge: _isRecentlyAdded(movie.added) ? const NewBadge() : null,
+                        isFavorite: favorites.isFavorite(ContentType.vod, movieId),
+                        onToggleFavorite: () =>
+                            context.read<FavoritesProvider>().toggleFavorite(ContentType.vod, movieId),
+                        onTap: () => _openVodDetails(context, movie),
+                      ),
+                    );
+                  },
+                  childCount: movies.length,
+                ),
+              ),
+            ),
+          ],
         );
       },
     );
@@ -1031,13 +1213,19 @@ class _SeriesGrid extends StatelessWidget {
   /// chamada de rede nova.
   final String searchQuery;
 
-  const _SeriesGrid({this.searchQuery = ''});
+  /// Quando true, mostra só as séries favoritadas (ver botão de coração da
+  /// AppBar em _HomeScreenBodyState).
+  final bool favoritesOnly;
+
+  const _SeriesGrid({this.searchQuery = '', this.favoritesOnly = false});
 
   @override
   Widget build(BuildContext context) {
     return Consumer<ContentProvider>(
       builder: (context, provider, _) {
         final state = provider.series;
+        final favorites = context.watch<FavoritesProvider>();
+        final settings = context.watch<SettingsProvider>();
 
         if (state.selectedCategoryId == null) {
           return const _EmptyHint(
@@ -1067,41 +1255,78 @@ class _SeriesGrid extends StatelessWidget {
         }
 
         final query = searchQuery.trim().toLowerCase();
-        final shows = query.isEmpty
+        var shows = query.isEmpty
             ? state.streams
             : state.streams.where((show) => show.name.toLowerCase().contains(query)).toList();
+        if (favoritesOnly) {
+          shows = shows
+              .where((show) => favorites.isFavorite(ContentType.series, show.seriesId.toString()))
+              .toList();
+        }
+        // Mesmo raciocínio de _LiveStreamsPanel: essencial em "Todos".
+        shows = shows.where((show) => !settings.isLocked(ContentType.series, show.categoryId)).toList();
 
         if (shows.isEmpty) {
           return _EmptyHint(
-            icon: Icons.search_off,
-            message: 'Nenhuma série encontrada para "${searchQuery.trim()}".',
+            icon: favoritesOnly ? Icons.favorite_border : Icons.search_off,
+            message: switch ((favoritesOnly, query.isEmpty)) {
+              (true, true) => 'Nenhuma série favoritada ainda.',
+              (true, false) => 'Nenhuma série favoritada encontrada para "${searchQuery.trim()}".',
+              (false, _) => 'Nenhuma série encontrada para "${searchQuery.trim()}".',
+            },
           );
         }
 
-        return GridView.builder(
-          padding: const EdgeInsets.all(AppSpacing.m),
+        final featured = (!favoritesOnly && query.isEmpty)
+            ? shows.reduce((a, b) => b.rating > a.rating ? b : a)
+            : null;
+
+        return CustomScrollView(
           // VOD/Séries podem ter centenas de itens por categoria — um
           // cacheExtent moderado mantém uma folga de linhas pré-construídas
           // fora da viewport (rolagem mais suave, menos rebuild a cada
           // frame) sem carregar imagens demais de uma vez.
           scrollCacheExtent: const ScrollCacheExtent.pixels(500),
-          gridDelegate: AppCardSizes.posterGridDelegate,
-          itemCount: shows.length,
-          itemBuilder: (context, index) {
-            final show = shows[index];
-
-            return DpadFocusHighlight(
-              key: ValueKey('series_${show.seriesId}'),
-              builder: (context, focusNode, hasFocus) => _PosterCard(
-                focusNode: focusNode,
-                title: show.name,
-                imageUrl: show.cover,
-                fallbackIcon: Icons.video_library,
-                rating: show.rating,
-                onTap: () => _openSeriesDetails(context, show),
+          slivers: [
+            if (featured != null)
+              SliverToBoxAdapter(
+                child: _FeaturedBanner(
+                  title: featured.name,
+                  imageUrl: featured.cover,
+                  rating: featured.rating,
+                  fallbackIcon: Icons.video_library,
+                  onTap: () => _openSeriesDetails(context, featured),
+                ),
               ),
-            );
-          },
+            SliverPadding(
+              padding: const EdgeInsets.all(AppSpacing.m),
+              sliver: SliverGrid(
+                gridDelegate: AppCardSizes.posterGridDelegate,
+                delegate: SliverChildBuilderDelegate(
+                  (context, index) {
+                    final show = shows[index];
+                    final seriesId = show.seriesId.toString();
+
+                    return DpadFocusHighlight(
+                      key: ValueKey('series_${show.seriesId}'),
+                      builder: (context, focusNode, hasFocus) => _PosterCard(
+                        focusNode: focusNode,
+                        title: show.name,
+                        imageUrl: show.cover,
+                        fallbackIcon: Icons.video_library,
+                        rating: show.rating,
+                        isFavorite: favorites.isFavorite(ContentType.series, seriesId),
+                        onToggleFavorite: () =>
+                            context.read<FavoritesProvider>().toggleFavorite(ContentType.series, seriesId),
+                        onTap: () => _openSeriesDetails(context, show),
+                      ),
+                    );
+                  },
+                  childCount: shows.length,
+                ),
+              ),
+            ),
+          ],
         );
       },
     );
@@ -1115,7 +1340,7 @@ void _openSeriesDetails(BuildContext context, Series series) {
   ).push(fadeSlideRoute((_) => SeriesDetailsScreen(series: series))).then((_) {
     // A série pode ter episódios assistidos via a própria SeriesDetailsScreen
     // (que empurra o Player por cima) — recarrega ao voltar pra Home pra
-    // refletir isso na prateleira, mesmo raciocínio de _playMovie abaixo.
+    // refletir isso na prateleira, mesmo raciocínio de _openVodDetails abaixo.
     continueWatching.load();
   });
 }
@@ -1148,7 +1373,7 @@ void _playLiveChannel(BuildContext context, LiveStream channel) {
   // Cadeia de URLs alternativas (TS direto -> HLS direto -> get.php TS ->
   // get.php HLS) que o PlaybackHealthMonitor percorre sozinho se a
   // reprodução falhar — só para Live TV por enquanto (VOD/série continuam
-  // com o fluxo atual, sem fallbackUrls, ver HomeScreen._playMovie).
+  // com o fluxo atual, sem fallbackUrls, ver VodDetailsScreen._play).
   final fallbackUrls = StreamUrlBuilder.buildFallbackChain(
     dns: apiService.dns,
     username: apiService.username,
@@ -1166,34 +1391,71 @@ void _playLiveChannel(BuildContext context, LiveStream channel) {
       )));
 }
 
-void _playMovie(BuildContext context, VodStream movie) {
-  final apiService = context.read<AuthProvider>().apiService;
-  if (apiService == null) return;
+/// Seleciona [categoryId] normalmente, A NÃO SER que esteja travada por PIN
+/// (ver SettingsProvider.isLocked) -- nesse caso pede o PIN antes,
+/// desbloqueia pra ESTA sessão (SettingsProvider.unlockForSession, nunca
+/// persistido) só depois de confirmado, e só então seleciona. PIN errado ou
+/// diálogo cancelado: não seleciona nada, categoria continua travada.
+Future<void> _selectCategoryGated(BuildContext context, ContentType type, String categoryId) async {
+  final settings = context.read<SettingsProvider>();
+  final contentProvider = context.read<ContentProvider>();
 
-  final url = apiService.buildVodStreamUrl(
-    movie.streamId.toString(),
-    movie.containerExtension,
-  );
+  if (!settings.isLocked(type, categoryId)) {
+    contentProvider.selectCategory(type, categoryId);
+    return;
+  }
+
+  final pin = await showEnterPinDialog(context, title: 'Digite o PIN pra ver esta categoria');
+  if (pin == null || !context.mounted) return;
+
+  final valid = await settings.verifyPin(pin);
+  if (!context.mounted) return;
+  if (!valid) {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('PIN incorreto.')));
+    return;
+  }
+
+  settings.unlockForSession(type, categoryId);
+  contentProvider.selectCategory(type, categoryId);
+}
+
+/// Alterna o cadeado de [categoryId] -- TRAVAR não pede PIN (sempre
+/// permitido, "fechar a porta" nunca precisa da chave). DESTRAVAR pede o
+/// PIN antes de tirar a proteção, senão o cadeado seria decorativo: bastaria
+/// tocar nele de novo pra desproteger sem confirmar nada.
+Future<void> _toggleCategoryLock(BuildContext context, ContentType type, String categoryId) async {
+  final settings = context.read<SettingsProvider>();
+
+  if (!settings.isProtectedCategory(type, categoryId)) {
+    settings.toggleProtectedCategory(type, categoryId);
+    return;
+  }
+
+  final pin = await showEnterPinDialog(context, title: 'Digite o PIN pra destravar esta categoria');
+  if (pin == null || !context.mounted) return;
+
+  final valid = await settings.verifyPin(pin);
+  if (!context.mounted) return;
+  if (!valid) {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('PIN incorreto.')));
+    return;
+  }
+
+  settings.toggleProtectedCategory(type, categoryId);
+}
+
+/// Abre a ficha do filme (VodDetailsScreen) em vez de tocar direto -- mesmo
+/// padrão de _openSeriesDetails logo acima. A reprodução em si (URL/Player)
+/// agora vive dentro da própria VodDetailsScreen (ver seu método `_play`).
+void _openVodDetails(BuildContext context, VodStream movie) {
   final continueWatching = context.read<ContinueWatchingProvider>();
-
-  Navigator.of(context)
-      .push(
-        fadeSlideRoute(
-          (_) => PlayerScreen(
-            url: url,
-            title: movie.name,
-            contentId: movie.streamId.toString(),
-            imageUrl: movie.streamIcon,
-            progressType: WatchProgressType.vod,
-          ),
-        ),
-      )
-      .then((_) {
-        // Volta da Player com progresso possivelmente atualizado (ou removido,
-        // se o filme foi concluído) — recarrega pra prateleira refletir o
-        // estado atual sem precisar reabrir a HomeScreen inteira.
-        continueWatching.load();
-      });
+  Navigator.of(context).push(fadeSlideRoute((_) => VodDetailsScreen(movie: movie))).then((_) {
+    // O filme pode ter sido assistido/progredido via a própria
+    // VodDetailsScreen (que empurra o Player por cima) -- recarrega ao
+    // voltar pra Home pra refletir isso na prateleira, mesmo raciocínio de
+    // _openSeriesDetails.
+    continueWatching.load();
+  });
 }
 
 /// Abre um item da seção "Continuar Assistindo" — a URL/contentId/tipo já
@@ -1263,6 +1525,16 @@ class _PosterCard extends StatelessWidget {
   /// [AppTheme.liveChannelNameStyle], menor.
   final TextStyle? titleStyle;
 
+  /// `null` (nos dois) = sem coração nenhum -- usado pela aba "Continuar
+  /// Assistindo", que reaproveita este mesmo card mas não tem noção de
+  /// favorito (ver HomeScreen._ContinueWatchingGrid). Toque/mouse apenas de
+  /// propósito (sem FocusNode próprio) -- não vira um segundo parada de
+  /// foco no D-Pad dentro do card, que já tem sua navegação por grid
+  /// própria; ver AppBar "Só favoritos" (_HomeScreenBodyState) como o
+  /// caminho 100% navegável por D-Pad pra ver/filtrar favoritos.
+  final bool? isFavorite;
+  final VoidCallback? onToggleFavorite;
+
   const _PosterCard({
     required this.title,
     required this.imageUrl,
@@ -1273,6 +1545,8 @@ class _PosterCard extends StatelessWidget {
     this.progressFraction,
     this.topLeftBadge,
     this.titleStyle,
+    this.isFavorite,
+    this.onToggleFavorite,
   });
 
   @override
@@ -1313,6 +1587,15 @@ class _PosterCard extends StatelessWidget {
                     right: 0,
                     bottom: 0,
                     child: _ProgressBar(fraction: progressFraction!),
+                  ),
+                if (isFavorite != null && onToggleFavorite != null)
+                  Positioned(
+                    bottom: 6,
+                    right: 6,
+                    child: _FavoriteToggle(
+                      isFavorite: isFavorite!,
+                      onPressed: onToggleFavorite!,
+                    ),
                   ),
               ],
             ),
@@ -1411,6 +1694,89 @@ class _StreamThumb extends StatelessWidget {
 /// extenso não cabe legível num badge de poucos pixels sobre uma miniatura
 /// de 40px). Opacidade oscilando entre 0.6 e 1.0 a cada ~1.5s, sutil o
 /// bastante pra não competir com o resto da lista.
+/// Subtítulo "Agora: X (HH:mm-HH:mm) · A seguir: Y" de um canal na lista
+/// simples de Live TV (ver `_LiveStreamsPanel`) -- busca `get_short_epg`
+/// SOB DEMANDA, só quando esta linha específica é construída (a
+/// `ListView.builder` só constrói o que está visível na tela, então rolar a
+/// lista é o que naturalmente limita quantos canais pedem EPG de uma vez,
+/// nunca todos de uma categoria inteira num único carregamento).
+///
+/// Nunca bloqueia nem quebra a linha do canal: enquanto carrega ou se o
+/// painel não suportar/EPG falhar, simplesmente não mostra nada (mesmo
+/// espírito do "erro só da sinopse" em VodDetailsScreen -- informação
+/// secundária, não pode atrapalhar o essencial).
+class _EpgSubtitle extends StatefulWidget {
+  final XtreamApiService apiService;
+  final int streamId;
+
+  const _EpgSubtitle({required this.apiService, required this.streamId});
+
+  @override
+  State<_EpgSubtitle> createState() => _EpgSubtitleState();
+}
+
+class _EpgSubtitleState extends State<_EpgSubtitle> {
+  /// Cache em memória, por streamId, COMPARTILHADO entre todas as
+  /// instâncias desta sessão (não por-widget) -- rolar pra cima/baixo na
+  /// lista (o que descarta e reconstrói as linhas fora da viewport) não
+  /// repete a chamada de rede pro mesmo canal ao voltar pra tela.
+  static final Map<int, List<EpgProgram>> _cache = {};
+
+  List<EpgProgram>? _programs;
+
+  @override
+  void initState() {
+    super.initState();
+    final cached = _cache[widget.streamId];
+    if (cached != null) {
+      _programs = cached;
+    } else {
+      _load();
+    }
+  }
+
+  Future<void> _load() async {
+    try {
+      final programs = await widget.apiService.getShortEpg(widget.streamId.toString());
+      _cache[widget.streamId] = programs;
+      if (mounted) setState(() => _programs = programs);
+    } catch (_) {
+      // Painel sem suporte a EPG, ou erro de rede -- some silenciosamente
+      // (ver doc da classe).
+    }
+  }
+
+  String _formatTime(DateTime time) {
+    final hour = time.hour.toString().padLeft(2, '0');
+    final minute = time.minute.toString().padLeft(2, '0');
+    return '$hour:$minute';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final programs = _programs;
+    if (programs == null || programs.isEmpty) return const SizedBox.shrink();
+
+    final now = programs.first;
+    final next = programs.length > 1 ? programs[1] : null;
+
+    final text = StringBuffer('Agora: ${now.title}');
+    if (now.start != null && now.end != null) {
+      text.write(' (${_formatTime(now.start!)}-${_formatTime(now.end!)})');
+    }
+    if (next != null && next.title.isNotEmpty) {
+      text.write(' · A seguir: ${next.title}');
+    }
+
+    return Text(
+      text.toString(),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
+    );
+  }
+}
+
 class _LivePulseBadge extends StatefulWidget {
   const _LivePulseBadge();
 
@@ -1456,6 +1822,130 @@ class _LivePulseBadgeState extends State<_LivePulseBadge>
   }
 }
 
+/// Card grande de destaque no topo de VOD/Séries (ver _VodGrid/_SeriesGrid)
+/// -- reaproveita SEMPRE dados já carregados (o item com maior nota da
+/// categoria/busca atual), nenhuma chamada de rede extra. Some sozinho
+/// durante busca/"só favoritos" (ver os dois call sites): faria pouco
+/// sentido "destacar" algo enquanto o usuário já está filtrando por outra
+/// coisa.
+class _FeaturedBanner extends StatelessWidget {
+  final String title;
+  final String imageUrl;
+  final double rating;
+  final IconData fallbackIcon;
+  final VoidCallback onTap;
+
+  const _FeaturedBanner({
+    required this.title,
+    required this.imageUrl,
+    required this.rating,
+    required this.fallbackIcon,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(AppSpacing.m, AppSpacing.m, AppSpacing.m, 0),
+      child: DpadFocusHighlight(
+        borderRadius: BorderRadius.circular(12),
+        builder: (context, focusNode, hasFocus) => InkWell(
+          focusNode: focusNode,
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(12),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: SizedBox(
+              height: 180,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  NetworkImageWithFallback(
+                    url: imageUrl,
+                    fallback: Container(
+                      color: AppTheme.surfaceColor,
+                      alignment: Alignment.center,
+                      child: Icon(fallbackIcon, size: 48, color: Colors.grey.shade600),
+                    ),
+                  ),
+                  // Só um scrim escurecendo a BASE (onde fica o texto) --
+                  // nunca a imagem inteira, pra continuar reconhecível.
+                  const DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        stops: [0.4, 1.0],
+                        colors: [Colors.transparent, Colors.black87],
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    top: 12,
+                    left: 12,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: AppTheme.primaryColor,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: const Text(
+                        'DESTAQUE',
+                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white),
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    left: 16,
+                    right: 16,
+                    bottom: 16,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white),
+                        ),
+                        if (rating > 0)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.star, size: 14, color: Colors.amber),
+                                const SizedBox(width: 4),
+                                Text(rating.toStringAsFixed(1), style: const TextStyle(color: Colors.white, fontSize: 13)),
+                              ],
+                            ),
+                          ),
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.play_circle_fill, size: 20, color: AppTheme.primaryColor),
+                            const SizedBox(width: 6),
+                            const Text(
+                              'Assistir',
+                              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _RatingBadge extends StatelessWidget {
   final double rating;
 
@@ -1479,6 +1969,38 @@ class _RatingBadge extends StatelessWidget {
             style: const TextStyle(fontSize: 11, color: Colors.white),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Coração de favoritar sobreposto no canto inferior direito de um pôster
+/// (ver _PosterCard.isFavorite/onToggleFavorite) — `GestureDetector` PRÓPRIO
+/// (não outro `InkWell`) de propósito: fica dentro do `InkWell` maior do
+/// card inteiro (que toca/reproduz), e o Flutter resolve o toque pro
+/// gesture recognizer mais interno automaticamente, sem precisar de
+/// `HitTestBehavior` nem `Listener` explícitos.
+class _FavoriteToggle extends StatelessWidget {
+  final bool isFavorite;
+  final VoidCallback onPressed;
+
+  const _FavoriteToggle({required this.isFavorite, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onPressed,
+      child: Container(
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          color: Colors.black.withAlpha(180),
+          shape: BoxShape.circle,
+        ),
+        child: Icon(
+          isFavorite ? Icons.favorite : Icons.favorite_border,
+          size: 14,
+          color: isFavorite ? AppTheme.primaryColor : Colors.white,
+        ),
       ),
     );
   }

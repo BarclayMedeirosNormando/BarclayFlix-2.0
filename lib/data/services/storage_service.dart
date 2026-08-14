@@ -26,6 +26,9 @@ class StorageService {
   static const _keyLegacyDns = 'server_dns';
   static const _keySavedProfiles = 'saved_profiles';
   static const _keyWatchProgress = 'watch_progress';
+  static const _keyFavorites = 'favorites';
+  static const _keyPin = 'lock_pin';
+  static const _keyProtectedCategories = 'protected_categories';
 
   final FlutterSecureStorage _storage;
 
@@ -143,6 +146,122 @@ class StorageService {
     final prefs = await SharedPreferences.getInstance();
     final encoded = json.encode(items.map((p) => p.toJson()).toList());
     await prefs.setString(_keyWatchProgress, encoded);
+  }
+
+  /// IDs favoritados de [contentType] ('live'/'vod'/'series' -- string livre
+  /// de propósito, não o enum `ContentType`: este service não deve depender
+  /// da camada de providers, ver FavoritesProvider). Mesmo raciocínio de
+  /// armazenamento do progresso acima (`shared_preferences`, dado não
+  /// sensível): uma única chave (`favorites`) com um mapa `{contentType:
+  /// [ids...]}` inteiro em JSON.
+  Future<Set<String>> getFavoriteIds(String contentType) async {
+    final all = await _readFavorites();
+    return all[contentType] ?? const {};
+  }
+
+  /// Alterna (favorita se não estava, remove se já estava) o id [contentId]
+  /// dentro de [contentType]. Devolve o novo estado (`true` = favoritado
+  /// agora), pra quem chamou não precisar reler pra saber o resultado.
+  Future<bool> toggleFavorite(String contentType, String contentId) async {
+    final all = await _readFavorites();
+    final current = Set<String>.from(all[contentType] ?? const {});
+    final nowFavorited = !current.remove(contentId);
+    if (nowFavorited) current.add(contentId);
+
+    all[contentType] = current;
+    await _writeFavorites(all);
+    return nowFavorited;
+  }
+
+  Future<Map<String, Set<String>>> _readFavorites() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_keyFavorites);
+    if (raw == null || raw.isEmpty) return {};
+
+    try {
+      final decoded = json.decode(raw);
+      if (decoded is! Map) return {};
+
+      return decoded.map(
+        (key, value) => MapEntry(
+          key.toString(),
+          value is List ? value.map((e) => e.toString()).toSet() : <String>{},
+        ),
+      );
+    } catch (_) {
+      // Mesmo raciocínio de _readProfiles/getAllProgress: JSON corrompido
+      // não pode travar a tela, só volta pra "nenhum favorito".
+      return {};
+    }
+  }
+
+  Future<void> _writeFavorites(Map<String, Set<String>> data) async {
+    final prefs = await SharedPreferences.getInstance();
+    final encoded = json.encode(data.map((key, value) => MapEntry(key, value.toList())));
+    await prefs.setString(_keyFavorites, encoded);
+  }
+
+  /// PIN do bloqueio por categoria (ver SettingsProvider/SettingsScreen) --
+  /// via `flutter_secure_storage` (não `shared_preferences`, ao contrário de
+  /// favoritos/progresso): é um segredo de verdade, mesmo raciocínio de
+  /// [SavedProfile.xtreamPassword] já guardado aqui. `null` = nenhum PIN
+  /// definido ainda (bloqueio desligado).
+  Future<String?> getPin() => _storage.read(key: _keyPin);
+
+  Future<void> setPin(String pin) => _storage.write(key: _keyPin, value: pin);
+
+  /// Remove o PIN E todas as categorias protegidas -- sem isso, categorias
+  /// ficariam marcadas como protegidas sem NENHUM PIN pra desbloqueá-las de
+  /// novo (trava permanente, sem saída).
+  Future<void> clearPin() async {
+    await _storage.delete(key: _keyPin);
+    await _storage.delete(key: _keyProtectedCategories);
+  }
+
+  /// IDs de categoria protegidos de [contentType] ('live'/'vod'/'series' --
+  /// mesma convenção de string livre dos favoritos, ver
+  /// `getFavoriteIds`/FavoritesProvider).
+  Future<Set<String>> getProtectedCategoryIds(String contentType) async {
+    final all = await _readProtectedCategories();
+    return all[contentType] ?? const {};
+  }
+
+  /// Alterna (protege se não estava, remove se já estava) [categoryId]
+  /// dentro de [contentType]. Devolve o novo estado (`true` = protegida
+  /// agora).
+  Future<bool> toggleProtectedCategory(String contentType, String categoryId) async {
+    final all = await _readProtectedCategories();
+    final current = Set<String>.from(all[contentType] ?? const {});
+    final nowProtected = !current.remove(categoryId);
+    if (nowProtected) current.add(categoryId);
+
+    all[contentType] = current;
+    await _writeProtectedCategories(all);
+    return nowProtected;
+  }
+
+  Future<Map<String, Set<String>>> _readProtectedCategories() async {
+    final raw = await _storage.read(key: _keyProtectedCategories);
+    if (raw == null || raw.isEmpty) return {};
+
+    try {
+      final decoded = json.decode(raw);
+      if (decoded is! Map) return {};
+
+      return decoded.map(
+        (key, value) => MapEntry(
+          key.toString(),
+          value is List ? value.map((e) => e.toString()).toSet() : <String>{},
+        ),
+      );
+    } catch (_) {
+      return {};
+    }
+  }
+
+  Future<void> _writeProtectedCategories(Map<String, Set<String>> data) async {
+    final encoded = json.encode(data.map((key, value) => MapEntry(key, value.toList())));
+    await _storage.write(key: _keyProtectedCategories, value: encoded);
   }
 
   Future<List<SavedProfile>> _readProfiles() async {

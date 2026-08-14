@@ -350,4 +350,104 @@ void main() {
       expect(all.single.type, WatchProgressType.episode);
     });
   });
+
+  group('Favoritos', () {
+    test('getFavoriteIds() retorna vazio quando nada foi favoritado', () async {
+      final service = _buildService();
+      expect(await service.getFavoriteIds('vod'), isEmpty);
+    });
+
+    test('toggleFavorite() favorita, devolve true, e persiste', () async {
+      final service = _buildService();
+      final result = await service.toggleFavorite('vod', '101');
+
+      expect(result, isTrue);
+      expect(await service.getFavoriteIds('vod'), {'101'});
+    });
+
+    test('toggleFavorite() no mesmo id desfavorita (devolve false) e some da lista', () async {
+      final service = _buildService();
+      await service.toggleFavorite('vod', '101');
+
+      final result = await service.toggleFavorite('vod', '101');
+
+      expect(result, isFalse);
+      expect(await service.getFavoriteIds('vod'), isEmpty);
+    });
+
+    test('contentType diferentes ("live"/"vod"/"series") não se misturam', () async {
+      final service = _buildService();
+      await service.toggleFavorite('live', '1');
+      await service.toggleFavorite('vod', '1');
+
+      expect(await service.getFavoriteIds('live'), {'1'});
+      expect(await service.getFavoriteIds('vod'), {'1'});
+      expect(await service.getFavoriteIds('series'), isEmpty);
+    });
+
+    test('vários ids favoritados no mesmo contentType convivem', () async {
+      final service = _buildService();
+      await service.toggleFavorite('series', '1');
+      await service.toggleFavorite('series', '2');
+
+      expect(await service.getFavoriteIds('series'), {'1', '2'});
+    });
+  });
+
+  group('PIN e categorias protegidas', () {
+    test('getPin() retorna null quando nenhum PIN foi definido', () async {
+      final service = _buildService();
+      expect(await service.getPin(), isNull);
+    });
+
+    test('setPin() salva e getPin() retorna o PIN salvo', () async {
+      final service = _buildService();
+      await service.setPin('1234');
+
+      expect(await service.getPin(), '1234');
+    });
+
+    test('clearPin() remove o PIN E todas as categorias protegidas', () async {
+      final service = _buildService();
+      await service.setPin('1234');
+      await service.toggleProtectedCategory('live', '10');
+
+      await service.clearPin();
+
+      expect(await service.getPin(), isNull);
+      expect(
+        await service.getProtectedCategoryIds('live'),
+        isEmpty,
+        reason: 'sem isso a categoria ficaria travada pra sempre, sem PIN nenhum capaz de abri-la',
+      );
+    });
+
+    test('toggleProtectedCategory() protege, devolve true, e persiste', () async {
+      final service = _buildService();
+      final result = await service.toggleProtectedCategory('vod', '10');
+
+      expect(result, isTrue);
+      expect(await service.getProtectedCategoryIds('vod'), {'10'});
+    });
+
+    test('toggleProtectedCategory() na mesma categoria desprotege (devolve false)', () async {
+      final service = _buildService();
+      await service.toggleProtectedCategory('vod', '10');
+
+      final result = await service.toggleProtectedCategory('vod', '10');
+
+      expect(result, isFalse);
+      expect(await service.getProtectedCategoryIds('vod'), isEmpty);
+    });
+
+    test('contentType diferentes ("live"/"vod"/"series") não se misturam', () async {
+      final service = _buildService();
+      await service.toggleProtectedCategory('live', '1');
+      await service.toggleProtectedCategory('vod', '1');
+
+      expect(await service.getProtectedCategoryIds('live'), {'1'});
+      expect(await service.getProtectedCategoryIds('vod'), {'1'});
+      expect(await service.getProtectedCategoryIds('series'), isEmpty);
+    });
+  });
 }

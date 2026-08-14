@@ -15,6 +15,7 @@ import 'package:iptv_app/data/services/device_auth_service.dart';
 import 'package:iptv_app/data/services/storage_service.dart';
 import 'package:iptv_app/providers/auth_provider.dart';
 import 'package:iptv_app/providers/profiles_provider.dart';
+import 'package:iptv_app/providers/settings_provider.dart';
 import 'package:iptv_app/screens/activation/activation_screen.dart';
 import 'package:iptv_app/screens/home/home_screen.dart';
 import 'package:iptv_app/screens/server_selection/server_selection_screen.dart';
@@ -53,6 +54,10 @@ Future<void> pumpActivationScreen(
             storageService: StorageService(storage: const FlutterSecureStorage()),
           ),
         ),
+        // HomeScreen (alcançável a partir daqui após ativação com sucesso)
+        // lê SettingsProvider assim que renderiza (ver
+        // _CategoriesSidebar/_LiveStreamsPanel/etc. em home_screen.dart).
+        ChangeNotifierProvider<SettingsProvider>(create: (_) => SettingsProvider()..load()),
       ],
       child: MaterialApp(
         home: ActivationScreen(

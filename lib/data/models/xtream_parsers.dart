@@ -7,6 +7,8 @@
 /// para um valor padrão seguro.
 library;
 
+import 'dart:convert';
+
 String asString(dynamic value, [String fallback = '']) {
   if (value == null) return fallback;
   final str = value.toString();
@@ -75,4 +77,20 @@ List<Map<String, dynamic>> asMapList(dynamic value) {
     }).toList();
   }
   return const [];
+}
+
+/// `get_short_epg` (guia de programação) retorna `title`/`description` em
+/// base64 -- especificação padrão da API Xtream Codes, ao contrário de
+/// qualquer outro campo de texto usado no resto deste app. Alguns painéis
+/// desrespeitam isso e mandam texto puro mesmo assim; se decodificar como
+/// base64 válido não der um UTF-8 válido (ou não for base64 válido de
+/// início), cai pro valor original sem decodificar, nunca lança exceção.
+String asBase64String(dynamic value, [String fallback = '']) {
+  final raw = asString(value, fallback);
+  if (raw.isEmpty) return raw;
+  try {
+    return utf8.decode(base64.decode(raw));
+  } catch (_) {
+    return raw;
+  }
 }

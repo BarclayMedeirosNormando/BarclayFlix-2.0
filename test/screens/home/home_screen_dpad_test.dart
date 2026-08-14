@@ -18,10 +18,13 @@ import 'package:iptv_app/data/services/storage_service.dart';
 import 'package:iptv_app/data/services/xtream_api_service.dart';
 import 'package:iptv_app/providers/auth_provider.dart';
 import 'package:iptv_app/providers/profiles_provider.dart';
+import 'package:iptv_app/providers/settings_provider.dart';
+import 'package:iptv_app/providers/vod_details_provider.dart';
 import 'package:iptv_app/screens/activation/activation_screen.dart';
 import 'package:iptv_app/screens/home/home_screen.dart';
 import 'package:iptv_app/screens/player/player_screen.dart';
 import 'package:iptv_app/screens/server_selection/server_selection_screen.dart';
+import 'package:iptv_app/screens/vod_details/vod_details_screen.dart';
 
 import '../../test_helpers/fake_player.dart';
 
@@ -69,6 +72,27 @@ Future<http.Response> _xtreamHandler(http.Request request) async {
         // continuam na lista simples (ver home_screen.dart._LiveStreamsPanel).
         {'stream_id': 103, 'name': 'Canal C ($categoryId) FHD', 'category_id': categoryId},
       ]);
+    case 'get_short_epg':
+      // Só "Canal A" (stream_id 101) tem EPG no dataset -- "Canal B" fica
+      // sem, prova que a ausência (painel sem suporte/erro) não impede a
+      // linha dela de aparecer normalmente (ver home_screen.dart._EpgSubtitle).
+      if (request.url.queryParameters['stream_id'] != '101') {
+        return http.Response('Not Found', 404);
+      }
+      return _json({
+        'epg_listings': [
+          {
+            'title': base64Encode(utf8.encode('Jornal da Noite')),
+            'start_timestamp': '1690000000',
+            'stop_timestamp': '1690003600',
+          },
+          {
+            'title': base64Encode(utf8.encode('Filme da Madrugada')),
+            'start_timestamp': '1690003600',
+            'stop_timestamp': '1690010800',
+          },
+        ],
+      });
     case 'get_vod_categories':
       return _json([
         {'category_id': '10', 'category_name': 'Lançamentos', 'parent_id': 0},
@@ -80,9 +104,31 @@ Future<http.Response> _xtreamHandler(http.Request request) async {
           {
             'stream_id': 200 + i,
             'name': 'Filme $i',
-            'category_id': categoryId,
+            // Categoria específica pedida (nenhuma mudança pros testes que
+            // já selecionam '10'/'11' direto): quando "Todos" é buscado
+            // (sem category_id, ver ContentProvider.allCategoriesId), o
+            // painel real devolveria a categoria VERDADEIRA de cada item --
+            // aqui simulada dividindo os 13 filmes entre as duas categorias
+            // reais, necessário pro teste de bloqueio por PIN abaixo (ver
+            // grupo "Configurações e bloqueio por PIN").
+            'category_id': categoryId ?? (i <= 10 ? '10' : '11'),
             'container_extension': 'mp4',
-            'rating': '0',
+            // "Filme 4" é o único com nota alta -- vira o destaque
+            // (_FeaturedBanner, ver home_screen.dart._VodGrid), então
+            // aparece duas vezes na árvore (banner + grid). Deliberadamente
+            // NÃO é "Filme 1/2/3" -- esses três são usados em várias
+            // asserções `find.text(...)` abaixo que esperam exatamente UM
+            // widget; com nota igual (0) entre eles, nenhum vira destaque.
+            'rating': i == 4 ? '9.5' : '0',
+            // "Filme 1" é o único "adicionado" dentro da janela do NewBadge
+            // (ver home_screen.dart._newBadgeWindow) -- "Filme 2" fica bem
+            // fora dela, prova que o selo não aparece pra qualquer `added`,
+            // só pro recente. Os demais (sem 'added') seguem o padrão de
+            // painéis que não reportam essa data.
+            if (i == 1)
+              'added': (DateTime.now().subtract(const Duration(days: 1)).millisecondsSinceEpoch ~/ 1000).toString()
+            else if (i == 2)
+              'added': (DateTime.now().subtract(const Duration(days: 30)).millisecondsSinceEpoch ~/ 1000).toString(),
           },
       ]);
     case 'get_series_categories':
@@ -93,10 +139,21 @@ Future<http.Response> _xtreamHandler(http.Request request) async {
       return _json([
         {'category_id': '20', 'category_name': 'Dramas', 'parent_id': 0},
       ]);
+    case 'get_vod_info':
+      return _json({
+        'info': {'plot': 'Sinopse de teste', 'rating': '0'},
+        'movie_data': {},
+      });
     case 'get_series':
       return _json([
         {'series_id': 1, 'name': 'Série A', 'category_id': categoryId, 'rating': '0'},
         {'series_id': 2, 'name': 'Série B', 'category_id': categoryId, 'rating': '0'},
+        // Nota alta de propósito -- vira o destaque (_FeaturedBanner, ver
+        // home_screen.dart._SeriesGrid), então aparece duas vezes na árvore
+        // (banner + grid). "Série A"/"Série B" (não esta) são as duas
+        // usadas nas asserções `find.text(...)` abaixo que esperam
+        // exatamente UM widget.
+        {'series_id': 3, 'name': 'Série C', 'category_id': categoryId, 'rating': '9.5'},
       ]);
     default:
       return http.Response('Not Found', 404);
@@ -190,7 +247,20 @@ Future<StorageService> pumpHomeScreen(
             authProvider: context.read<AuthProvider>(),
             storageService: resolvedStorageService,
           ),
-          child: const MaterialApp(home: HomeScreen()),
+          // Registrado no mesmo nível de main.dart (acima da HomeScreen,
+          // não dentro do MultiProvider dela) -- VodDetailsScreen (empurrada
+          // por cima ao tocar um filme, ver HomeScreen._openVodDetails)
+          // depende deste provider existir como ancestral.
+          child: ChangeNotifierProvider<VodDetailsProvider>(
+            create: (_) => VodDetailsProvider(),
+            // Mesmo StorageService (secure storage mockado) usado pelos
+            // perfis acima -- PIN/categorias protegidas usam o mesmo
+            // backend (ver StorageService.getPin/getProtectedCategoryIds).
+            child: ChangeNotifierProvider<SettingsProvider>(
+              create: (_) => SettingsProvider(storageService: resolvedStorageService)..load(),
+              child: const MaterialApp(home: HomeScreen()),
+            ),
+          ),
         ),
       ),
     ),
@@ -217,8 +287,13 @@ Future<void> selectVodCategory(WidgetTester tester, String categoryId) async {
 /// (ListTile/InkWell/ChoiceChip) que registra o FocusNode de verdade.
 /// Confirmado como o padrão usado nos testes do próprio SDK do Flutter
 /// (focus_traversal_test.dart).
+/// `.any` (não `tester.element`/`.single`) de propósito: o título de um
+/// item em destaque (_FeaturedBanner, ver home_screen.dart._VodGrid/
+/// _SeriesGrid) repete o MESMO texto do card dele no grid logo abaixo --
+/// `find.text(name)` pode legitimamente casar 2 widgets agora. "Focado" aqui
+/// significa "pelo menos uma das ocorrências está focada".
 bool isFocused(WidgetTester tester, Finder finder) {
-  return Focus.of(tester.element(finder)).hasFocus;
+  return tester.elementList(finder).any((element) => Focus.of(element).hasFocus);
 }
 
 void focusItem(WidgetTester tester, Finder finder) {
@@ -326,7 +401,8 @@ void main() {
   });
 
   group('Sidebar <-> grid', () {
-    testWidgets('seta direita no último item da sidebar move o foco pro primeiro item do grid', (tester) async {
+    testWidgets('seta direita no último item da sidebar move o foco pro banner de destaque; seta para baixo alcança o grid',
+        (tester) async {
       await pumpHomeScreen(tester);
       await selectVodCategory(tester, '11'); // "Clássicos" = última categoria da lista
 
@@ -338,7 +414,24 @@ void main() {
       await tester.pump();
 
       expect(isFocused(tester, find.text('Clássicos')), isFalse);
-      expect(isFocused(tester, find.text('Filme 1')), isTrue);
+      // Com o _FeaturedBanner ocupando o topo da área de conteúdo (mesma UX
+      // de app de streaming: destaque antes do grid), "seta direita" a
+      // partir da sidebar pousa NELE primeiro -- "Assistir" só existe
+      // dentro do banner, prova que é ele (e não algum card do grid).
+      expect(isFocused(tester, find.text('Assistir')), isTrue);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+
+      // "Seta para baixo" a partir do banner (que ocupa a largura inteira)
+      // pousa no card geometricamente mais próximo do grid abaixo -- não
+      // necessariamente "Filme 1" (a primeira coluna), então descobre
+      // dinamicamente qual, mesmo padrão do grupo "Navegação dentro do
+      // grid" abaixo, em vez de presumir um índice fixo.
+      expect(isFocused(tester, find.text('Assistir')), isFalse);
+      final focusedMovie =
+          [for (var i = 1; i <= 13; i++) 'Filme $i'].where((name) => isFocused(tester, find.text(name))).toList();
+      expect(focusedMovie, hasLength(1), reason: 'esperava exatamente um filme do grid focado após ArrowDown');
     });
 
     testWidgets('seta esquerda na borda esquerda do grid volta o foco pra sidebar', (tester) async {
@@ -482,14 +575,15 @@ void main() {
         await tester.pump();
         expect(isFocused(tester, find.text('Filme 3')), isTrue);
 
-        // Empilha a mesma PlayerScreen real que _playMovie usaria, só que
-        // com o PlayerProvider fake injetado (ver test_helpers/fake_player.dart)
-        // — _playMovie em si sempre cria um PlayerProvider real (sem esse
-        // seam, de propósito: não é código pensado pra teste), então não dá
-        // pra disparar a navegação real aqui sem tentar carregar o media_kit
-        // nativo. O que este teste valida — preservação de foco via
-        // Navigator/FocusScope ao empilhar e desempilhar uma rota — é
-        // idêntico não importa como a rota chegou lá.
+        // Empilha a mesma PlayerScreen real que VodDetailsScreen._play
+        // usaria, só que com o PlayerProvider fake injetado (ver
+        // test_helpers/fake_player.dart) — a rota real sempre cria um
+        // PlayerProvider de verdade (sem esse seam, de propósito: não é
+        // código pensado pra teste), então não dá pra disparar a navegação
+        // real aqui sem tentar carregar o media_kit nativo. O que este
+        // teste valida — preservação de foco via Navigator/FocusScope ao
+        // empilhar e desempilhar uma rota — é idêntico não importa como a
+        // rota chegou lá (direto da Home ou via VodDetailsScreen).
         final navigator = tester.state<NavigatorState>(find.byType(Navigator).first);
         navigator.push(
           MaterialPageRoute(
@@ -761,6 +855,18 @@ void main() {
 
       expect(find.byType(TextField), findsOneWidget);
     });
+
+    testWidgets('EPG ("agora"/"a seguir") aparece sob demanda no canal que tem, some silenciosamente no que não tem',
+        (tester) async {
+      await pumpHomeScreen(tester);
+      await pumpSettled(tester);
+
+      // "Canal A" (stream_id 101) tem EPG no dataset -- "Canal B" não (ver
+      // _xtreamHandler): a ausência não pode travar/quebrar a linha dela.
+      expect(find.textContaining('Jornal da Noite'), findsOneWidget);
+      expect(find.textContaining('Filme da Madrugada'), findsOneWidget);
+      expect(find.textContaining('Canal B'), findsOneWidget);
+    });
   });
 
   group('Filmes (VOD): categoria "Todos" e busca inline local', () {
@@ -860,6 +966,67 @@ void main() {
       expect(inTab('vod', find.textContaining('HD')), findsNothing);
       expect(inTab('vod', find.textContaining('SD')), findsNothing);
     });
+
+    testWidgets('selo "Novo" aparece só no filme adicionado dentro da janela recente', (tester) async {
+      await pumpHomeScreen(tester);
+
+      await tester.tap(find.text('Filmes'));
+      await pumpSettled(tester);
+
+      // "Filme 1" foi adicionado ontem (dentro da janela) -- "Filme 2" há 30
+      // dias (fora dela) e os demais 11 não reportam 'added' -- só o
+      // primeiro ganha o selo (ver dataset em _xtreamHandler acima).
+      expect(find.text('Novo'), findsOneWidget);
+    });
+
+    testWidgets('coração favorita um filme; botão "Só favoritos" da AppBar filtra só ele', (tester) async {
+      await pumpHomeScreen(tester);
+
+      await tester.tap(find.text('Filmes'));
+      await pumpSettled(tester);
+
+      // O coração de cada card é um GestureDetector simples (não um
+      // IconButton) -- só o botão da AppBar (abaixo) é um IconButton de
+      // verdade, o que distingue os dois em qualquer find.widgetWithIcon.
+      final filme1Card = find.ancestor(of: find.text('Filme 1'), matching: find.byType(InkWell));
+      await tester.tap(find.descendant(of: filme1Card, matching: find.byIcon(Icons.favorite_border)));
+      await tester.pump();
+
+      // Favoritar não deve navegar pro Player (o coração intercepta o toque
+      // antes do InkWell do card inteiro).
+      expect(find.byType(HomeScreen), findsOneWidget);
+      expect(find.descendant(of: filme1Card, matching: find.byIcon(Icons.favorite)), findsOneWidget);
+
+      await tester.tap(find.widgetWithIcon(IconButton, Icons.favorite_border));
+      await tester.pump();
+
+      expect(find.text('Filme 1'), findsOneWidget);
+      expect(find.text('Filme 2'), findsNothing);
+      expect(find.text('Filme 3'), findsNothing);
+
+      await tester.tap(find.widgetWithIcon(IconButton, Icons.favorite));
+      await tester.pump();
+
+      expect(find.text('Filme 2'), findsOneWidget);
+    });
+
+    testWidgets('tocar num filme abre a ficha de detalhes (VodDetailsScreen), não toca direto', (tester) async {
+      await pumpHomeScreen(tester);
+
+      await tester.tap(find.text('Filmes'));
+      await pumpSettled(tester);
+
+      // "Filme 4" é o destaque (ver _FeaturedBanner) -- toca em "Filme 2"
+      // no grid normal em vez dele, pra este teste continuar válido
+      // independente de qual card carrega o banner.
+      final filme2Card = find.ancestor(of: find.text('Filme 2'), matching: find.byType(InkWell));
+      await tester.tap(filme2Card);
+      await pumpSettled(tester);
+
+      expect(find.byType(VodDetailsScreen), findsOneWidget);
+      expect(find.byType(PlayerScreen), findsNothing);
+      expect(find.text('Assistir'), findsOneWidget);
+    });
   });
 
   group('Séries: categoria "Todos" e busca inline local', () {
@@ -937,6 +1104,99 @@ void main() {
       expect(inTab('series', find.text('Dramas')), findsOneWidget);
       expect(inTab('series', find.text('Lançamentos')), findsNothing);
       expect(inTab('series', find.text('Esportes')), findsNothing);
+    });
+  });
+
+  group('Configurações e bloqueio por PIN', () {
+    /// Ícone de Configurações/PIN da AppBar mudam o estado do
+    /// [SettingsProvider] direto (sem passar pela UI) -- mais rápido que
+    /// simular o fluxo inteiro de "abrir Configurações > definir PIN" pra
+    /// testes que só precisam de um PIN já definido como pré-condição.
+    SettingsProvider settingsOf(WidgetTester tester) =>
+        Provider.of<SettingsProvider>(tester.element(find.byType(HomeScreen)), listen: false);
+
+    testWidgets('sem PIN definido, nenhuma categoria mostra cadeado', (tester) async {
+      await pumpHomeScreen(tester);
+
+      await tester.tap(find.text('Filmes'));
+      await pumpSettled(tester);
+
+      expect(find.byIcon(Icons.lock), findsNothing);
+      expect(find.byIcon(Icons.lock_open), findsNothing);
+    });
+
+    testWidgets(
+      'trava "Clássicos": some da visão "Todos"; selecionar pede PIN; PIN errado bloqueia, PIN certo libera',
+      (tester) async {
+        await pumpHomeScreen(tester);
+        await settingsOf(tester).setPin('1234');
+        await pumpSettled(tester);
+
+        await tester.tap(find.text('Filmes'));
+        await pumpSettled(tester);
+
+        // "Todos" (selecionada por padrão) mostra os 13 filmes -- "Filme 11"
+        // pertence à categoria "Clássicos" (ver dataset em _xtreamHandler).
+        expect(find.text('Filme 11'), findsOneWidget);
+
+        final classicosRow = find.ancestor(of: find.text('Clássicos'), matching: find.byType(ListTile));
+        await tester.tap(find.descendant(of: classicosRow, matching: find.byIcon(Icons.lock_open)));
+        await tester.pump();
+
+        expect(find.descendant(of: classicosRow, matching: find.byIcon(Icons.lock)), findsOneWidget);
+        expect(
+          find.text('Filme 11'),
+          findsNothing,
+          reason: '"Clássicos" travada -- seus itens não podem aparecer nem em "Todos"',
+        );
+
+        // Tocar na categoria travada pede o PIN, não seleciona direto.
+        await tester.tap(find.text('Clássicos'));
+        await pumpSettled(tester);
+        expect(find.text('Digite o PIN pra ver esta categoria'), findsOneWidget);
+
+        await tester.enterText(find.widgetWithText(TextField, 'PIN'), '0000');
+        await tester.tap(find.text('Confirmar'));
+        await pumpSettled(tester);
+
+        expect(find.text('PIN incorreto.'), findsOneWidget);
+        expect(find.text('Filme 11'), findsNothing, reason: 'PIN errado não desbloqueia nada');
+
+        await tester.tap(find.text('Clássicos'));
+        await pumpSettled(tester);
+        await tester.enterText(find.widgetWithText(TextField, 'PIN'), '1234');
+        await tester.tap(find.text('Confirmar'));
+        await pumpSettled(tester);
+
+        // PIN certo: seleciona "Clássicos" de verdade (mostra o conteúdo
+        // dela) e desbloqueia a categoria pro resto da sessão.
+        expect(find.text('Filme 11'), findsOneWidget);
+      },
+    );
+
+    testWidgets('desproteger uma categoria já travada também pede PIN', (tester) async {
+      await pumpHomeScreen(tester);
+      await settingsOf(tester).setPin('1234');
+      await pumpSettled(tester);
+
+      await tester.tap(find.text('Filmes'));
+      await pumpSettled(tester);
+
+      final classicosRow = find.ancestor(of: find.text('Clássicos'), matching: find.byType(ListTile));
+      await tester.tap(find.descendant(of: classicosRow, matching: find.byIcon(Icons.lock_open)));
+      await tester.pump();
+      expect(find.descendant(of: classicosRow, matching: find.byIcon(Icons.lock)), findsOneWidget);
+
+      await tester.tap(find.descendant(of: classicosRow, matching: find.byIcon(Icons.lock)));
+      await pumpSettled(tester);
+      expect(find.text('Digite o PIN pra destravar esta categoria'), findsOneWidget);
+
+      await tester.enterText(find.widgetWithText(TextField, 'PIN'), '1234');
+      await tester.tap(find.text('Confirmar'));
+      await pumpSettled(tester);
+
+      expect(find.descendant(of: classicosRow, matching: find.byIcon(Icons.lock_open)), findsOneWidget);
+      expect(find.text('Filme 11'), findsOneWidget, reason: 'desprotegida -- volta a aparecer em "Todos"');
     });
   });
 }
