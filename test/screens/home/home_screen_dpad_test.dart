@@ -135,13 +135,9 @@ Future<void> pumpSettled(WidgetTester tester) async {
 /// 1400px as 6 colunas cabem numa linha só e não haveria uma "próxima
 /// linha" pra descer.
 /// [storageService], quando informado, entra como o `StorageService` do
-/// [ProfilesProvider] montado junto com a HomeScreen -- necessário pro
-/// botão "Reativar dispositivo" (ver `HomeScreen._reactivateDevice`), que
-/// depende de `ProfilesProvider.clearSavedProfile()`, não só de
-/// `AuthProvider.logout()`.
+/// [ProfilesProvider] montado junto com a HomeScreen.
 /// Devolve o [StorageService] usado, pra quem chamar poder inspecionar o que
-/// sobrou salvo depois do teste (ex: confirmar que reativar limpou de
-/// verdade, não só navegou pra ActivationScreen).
+/// sobrou salvo depois do teste.
 /// [deviceAuthHandler], quando informado, entra como o backend HTTP da
 /// ativação de dispositivo (ver DeviceAuthService) -- necessário só pro
 /// teste de "Trocar de servidor" (que dispara uma nova checagem de
@@ -590,61 +586,6 @@ void main() {
     // player_provider_test.dart ("startAtSeconds faz seek...").
   });
 
-  group('Reativar dispositivo', () {
-    testWidgets('toca no botão, confirma o diálogo: limpa o perfil salvo e volta pra ActivationScreen', (tester) async {
-      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform({});
-      final storageService = StorageService(storage: const FlutterSecureStorage());
-      await storageService.addProfile(const SavedProfile(
-        id: 'p1',
-        nomeExibicao: 'Servidor Salvo',
-        xtreamUsername: _testUser,
-        xtreamPassword: _testPass,
-        dns: _testDns,
-      ));
-
-      await pumpHomeScreen(tester, storageService: storageService);
-      expect(await storageService.getSavedProfiles(), hasLength(1));
-
-      await tester.tap(find.widgetWithIcon(IconButton, Icons.restart_alt));
-      await pumpSettled(tester);
-
-      expect(find.text('Reativar dispositivo?'), findsOneWidget);
-      await tester.tap(find.widgetWithText(TextButton, 'Reativar'));
-      await pumpSettled(tester);
-
-      expect(find.byType(ActivationScreen), findsOneWidget);
-      expect(find.byType(HomeScreen), findsNothing);
-      expect(
-        await storageService.getSavedProfiles(),
-        isEmpty,
-        reason: 'sem isso a SplashScreen revalidaria o mesmo cliente de novo na próxima abertura do app',
-      );
-    });
-
-    testWidgets('toca no botão, cancela o diálogo: nada muda, continua na HomeScreen', (tester) async {
-      FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform({});
-      final storageService = StorageService(storage: const FlutterSecureStorage());
-      await storageService.addProfile(const SavedProfile(
-        id: 'p1',
-        nomeExibicao: 'Servidor Salvo',
-        xtreamUsername: _testUser,
-        xtreamPassword: _testPass,
-        dns: _testDns,
-      ));
-
-      await pumpHomeScreen(tester, storageService: storageService);
-
-      await tester.tap(find.widgetWithIcon(IconButton, Icons.restart_alt));
-      await pumpSettled(tester);
-
-      await tester.tap(find.widgetWithText(TextButton, 'Cancelar'));
-      await pumpSettled(tester);
-
-      expect(find.byType(HomeScreen), findsOneWidget);
-      expect(await storageService.getSavedProfiles(), hasLength(1));
-    });
-  });
-
   group('Trocar de servidor', () {
     Future<http.Response> deviceAuthHandlerFn(http.Request request) async {
       return http.Response(
@@ -847,16 +788,16 @@ void main() {
         await tester.tap(find.text('Filmes'));
         await pumpSettled(tester);
 
-        expect(inTab('vod', find.byIcon(Icons.search)), findsOneWidget);
+        expect(find.byIcon(Icons.search), findsOneWidget);
         expect(inTab('vod', find.byType(TextField)), findsNothing);
 
-        await tester.tap(inTab('vod', find.byIcon(Icons.search)));
+        await tester.tap(find.byIcon(Icons.search));
         await tester.pump();
 
         // Campo aberto ali mesmo -- nunca uma rota nova nem um overlay.
         expect(inTab('vod', find.byType(TextField)), findsOneWidget);
         expect(find.byType(HomeScreen), findsOneWidget);
-        expect(inTab('vod', find.byIcon(Icons.close)), findsOneWidget);
+        expect(find.byIcon(Icons.close), findsOneWidget);
 
         await tester.enterText(inTab('vod', find.byType(TextField)), 'Filme 3');
         await tester.pump();
@@ -866,7 +807,7 @@ void main() {
         expect(textWidget('Filme 3'), findsOneWidget);
         expect(find.text('Filme 1'), findsNothing);
 
-        await tester.tap(inTab('vod', find.byIcon(Icons.close)));
+        await tester.tap(find.byIcon(Icons.close));
         await tester.pump();
 
         // Fechar a busca limpa o filtro e volta a mostrar tudo.
@@ -882,7 +823,7 @@ void main() {
       await tester.tap(find.text('Filmes'));
       await pumpSettled(tester);
 
-      await tester.tap(inTab('vod', find.byIcon(Icons.search)));
+      await tester.tap(find.byIcon(Icons.search));
       await tester.pump();
 
       await tester.enterText(inTab('vod', find.byType(TextField)), 'filme que não existe');
@@ -898,9 +839,9 @@ void main() {
       await tester.tap(find.text('Filmes'));
       await pumpSettled(tester);
 
-      focusItem(tester, inTab('vod', find.byIcon(Icons.search)));
+      focusItem(tester, find.byIcon(Icons.search));
       await tester.pump();
-      expect(isFocused(tester, inTab('vod', find.byIcon(Icons.search))), isTrue);
+      expect(isFocused(tester, find.byIcon(Icons.search)), isTrue);
 
       expect(inTab('vod', find.byType(TextField)), findsNothing);
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
@@ -944,14 +885,14 @@ void main() {
         await tester.tap(find.widgetWithText(Tab, 'Séries'));
         await pumpSettled(tester);
 
-        expect(inTab('series', find.byIcon(Icons.search)), findsOneWidget);
+        expect(find.byIcon(Icons.search), findsOneWidget);
         expect(inTab('series', find.byType(TextField)), findsNothing);
 
-        await tester.tap(inTab('series', find.byIcon(Icons.search)));
+        await tester.tap(find.byIcon(Icons.search));
         await tester.pump();
 
         expect(inTab('series', find.byType(TextField)), findsOneWidget);
-        expect(inTab('series', find.byIcon(Icons.close)), findsOneWidget);
+        expect(find.byIcon(Icons.close), findsOneWidget);
 
         await tester.enterText(inTab('series', find.byType(TextField)), 'Série A');
         await tester.pump();
@@ -959,7 +900,7 @@ void main() {
         expect(textWidget('Série A'), findsOneWidget);
         expect(find.text('Série B'), findsNothing);
 
-        await tester.tap(inTab('series', find.byIcon(Icons.close)));
+        await tester.tap(find.byIcon(Icons.close));
         await tester.pump();
 
         expect(inTab('series', find.byType(TextField)), findsNothing);
@@ -974,7 +915,7 @@ void main() {
       await tester.tap(find.widgetWithText(Tab, 'Séries'));
       await pumpSettled(tester);
 
-      await tester.tap(inTab('series', find.byIcon(Icons.search)));
+      await tester.tap(find.byIcon(Icons.search));
       await tester.pump();
 
       await tester.enterText(inTab('series', find.byType(TextField)), 'série que não existe');

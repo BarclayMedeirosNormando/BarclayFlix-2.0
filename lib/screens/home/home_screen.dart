@@ -120,6 +120,21 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
   // (nem escurecer) o resto da tela com um dialog.
   bool _switchingServer = false;
 
+  // Uma GlobalKey por aba de conteúdo -- dá pro botão de lupa GLOBAL da
+  // AppBar (ver `build` abaixo) abrir/fechar a busca da aba ATUALMENTE
+  // visível sem precisar levantar todo o estado de busca (_searching,
+  // _searchController etc.) pra cá: ele só invoca `_toggleSearch()` no
+  // `_ContentTabViewState` certo através da key. Mapeado por índice em vez
+  // de por `ContentType` porque é assim que `_tabController.index` (a fonte
+  // de "qual aba está visível agora") já vem.
+  final List<GlobalKey<_ContentTabViewState>> _contentTabKeys =
+      List.generate(ContentType.values.length, (_) => GlobalKey<_ContentTabViewState>());
+
+  /// null na aba "Continuar Assistindo" (índice fora de [ContentType],
+  /// mesma guarda usada em `_ensureCategoriesLoaded`) -- ela não tem busca.
+  GlobalKey<_ContentTabViewState>? get _currentContentTabKey =>
+      _tabController.index < _contentTabKeys.length ? _contentTabKeys[_tabController.index] : null;
+
   @override
   void initState() {
     super.initState();
@@ -154,6 +169,11 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
   }
 
   void _onTabSettled() {
+    // Os botões de busca/atualizar da AppBar (ver `build`) dependem de qual
+    // aba está selecionada agora -- sem este setState aqui, a AppBar (que
+    // não é filha da TabBarView) nunca saberia que precisa se redesenhar
+    // quando o usuário troca de aba.
+    setState(() {});
     if (!_tabController.indexIsChanging) {
       _ensureCategoriesLoaded(_tabController.index);
     }
@@ -190,51 +210,7 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
     context.read<ContentProvider>().loadCategories(ContentType.values[index]);
   }
 
-  /// Não existe "logout" real neste app: a identidade é o dispositivo, não
-  /// uma sessão de usuário/senha, então não há pra onde "deslogar" (ver
-  /// CLAUDE.md/arquitetura de ativação por código). Este botão serve pra
-  /// MIGRAR o aparelho pra outro cliente: limpa o perfil salvo (senão a
-  /// SplashScreen revalidaria o mesmo cliente de novo na próxima abertura,
-  /// tornando este botão inútil), encerra a sessão ativa em memória, e
-  /// volta pra ActivationScreen com o código deste dispositivo pronto pra
-  /// ser reenviado ao suporte.
-  Future<void> _reactivateDevice(BuildContext context) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Reativar dispositivo?'),
-        content: const Text(
-          'Isso desvincula este aparelho do cliente atual. Você vai precisar enviar o código '
-          'de ativação para o suporte de novo.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Cancelar'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Reativar'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed != true) return;
-    if (!context.mounted) return;
-
-    await context.read<ProfilesProvider>().clearSavedProfile();
-    if (!context.mounted) return;
-
-    context.read<AuthProvider>().logout();
-
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => const ActivationScreen()),
-      (route) => false,
-    );
-  }
-
-  /// DIFERENTE de [_reactivateDevice]: rebusca a lista de servidores
+  /// Rebusca a lista de servidores
   /// vinculados a este MESMO dispositivo já ativado e leva pra
   /// ServerSelectionScreen -- nunca apaga nada do StorageService, nunca
   /// desvincula o dispositivo. Só depois de escolher um servidor lá é que o
@@ -272,6 +248,34 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
     );
   }
 
+  /// Abre/fecha a busca da aba de conteúdo atualmente visível através da
+  /// `GlobalKey` correspondente (ver `_currentContentTabKey`) -- `setState`
+  /// aqui é necessário mesmo o toggle de verdade acontecendo dentro do
+  /// `_ContentTabViewState` (que já se auto-redesenha sozinho): sem ele,
+  /// o ÍCONE deste botão na AppBar (busca vs. fechar, calculado em `build`
+  /// a partir de `_isCurrentTabSearching`) não saberia que precisa mudar,
+  /// já que AppBar e a aba são State objects diferentes e não se escutam.
+  void _toggleCurrentSearch() {
+    setState(() {
+      _currentContentTabKey?.currentState?._toggleSearch();
+    });
+  }
+
+  bool get _isCurrentTabSearching => _currentContentTabKey?.currentState?._searching ?? false;
+
+  /// Botão de atualizar da AppBar: na aba atual, força releitura ignorando
+  /// cache (ver `ContentProvider.refresh`); na aba "Continuar Assistindo"
+  /// (sem `ContentType`, ver `_currentContentTabKey`), recarrega o
+  /// progresso salvo em vez disso.
+  void _refreshCurrent(BuildContext context) {
+    final index = _tabController.index;
+    if (index < ContentType.values.length) {
+      context.read<ContentProvider>().refresh(ContentType.values[index]);
+    } else {
+      context.read<ContinueWatchingProvider>().load();
+    }
+  }
+
   /// HomeScreen é a única rota na pilha (splash/login chegam aqui via
   /// `pushReplacement`), então sem essa interceptação o botão/tecla Voltar
   /// já derrubaria o app direto — aqui vira uma saída deliberada, com
@@ -302,6 +306,11 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
 
   @override
   Widget build(BuildContext context) {
+    // `watch` (não `read`): o título precisa re-renderizar sozinho quando
+    // _switchServer (acima) troca o perfil salvo por um servidor diferente,
+    // sem precisar de nenhum setState manual aqui.
+    final connectedServerName = context.watch<ProfilesProvider>().savedProfile?.nomeExibicao;
+
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.escape): () =>
@@ -317,12 +326,22 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
         },
         child: Scaffold(
           appBar: AppBar(
-            title: const Text('BarclayFlix 2.0'),
+            title: Text(connectedServerName ?? 'BarclayFlix 2.0'),
             actions: [
-              // Ícone/tooltip DELIBERADAMENTE distintos de "Sair" logo ao
-              // lado -- swap_horiz (troca) em vez de logout (saída), pra
-              // não serem confundidos: um mantém a sessão (só troca de
-              // servidor), o outro encerra tudo.
+              // Ausente na aba "Continuar Assistindo" (_currentContentTabKey
+              // null ali, ver getter) -- essa aba não tem nenhum conteúdo
+              // filtrável por texto.
+              if (_currentContentTabKey != null)
+                IconButton(
+                  icon: Icon(_isCurrentTabSearching ? Icons.close : Icons.search),
+                  tooltip: _isCurrentTabSearching ? 'Fechar busca' : 'Buscar',
+                  onPressed: _toggleCurrentSearch,
+                ),
+              IconButton(
+                icon: const Icon(Icons.refresh),
+                tooltip: 'Atualizar',
+                onPressed: () => _refreshCurrent(context),
+              ),
               IconButton(
                 icon: _switchingServer
                     ? const SizedBox(
@@ -333,11 +352,6 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
                     : const Icon(Icons.swap_horiz),
                 tooltip: 'Trocar de servidor',
                 onPressed: _switchingServer ? null : () => _switchServer(context),
-              ),
-              IconButton(
-                icon: const Icon(Icons.restart_alt),
-                tooltip: 'Reativar dispositivo',
-                onPressed: () => _reactivateDevice(context),
               ),
             ],
             bottom: TabBar(
@@ -366,16 +380,19 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
               controller: _tabController,
               children: [
                 _ContentTabView(
+                  key: _contentTabKeys[ContentType.live.index],
                   type: ContentType.live,
                   searchHintText: 'Buscar canal...',
                   streamsPanelBuilder: (query) => _LiveStreamsPanel(searchQuery: query),
                 ),
                 _ContentTabView(
+                  key: _contentTabKeys[ContentType.vod.index],
                   type: ContentType.vod,
                   searchHintText: 'Buscar filme...',
                   streamsPanelBuilder: (query) => _VodGrid(searchQuery: query),
                 ),
                 _ContentTabView(
+                  key: _contentTabKeys[ContentType.series.index],
                   type: ContentType.series,
                   searchHintText: 'Buscar série...',
                   streamsPanelBuilder: (query) => _SeriesGrid(searchQuery: query),
@@ -406,6 +423,7 @@ class _ContentTabView extends StatefulWidget {
   final Widget Function(String searchQuery) streamsPanelBuilder;
 
   const _ContentTabView({
+    super.key,
     required this.type,
     required this.searchHintText,
     required this.streamsPanelBuilder,
@@ -426,7 +444,14 @@ class _ContentTabViewState extends State<_ContentTabView> {
     // Só depois do campo existir de verdade na árvore (próximo frame) — pedir
     // foco no mesmo build em que o campo aparece não tem efeito.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _searchFieldFocusNode.requestFocus();
+      if (!mounted) return;
+      _searchFieldFocusNode.requestFocus();
+      // Em Android TV (ex.: Google TV/TCL), o foco pedido por controle remoto
+      // (sem touchscreen) nem sempre dispara o teclado virtual sozinho — o
+      // SO só mostra o IME automaticamente em resposta a um toque real.
+      // Força a exibição explicitamente aqui; em telas com touch isso é um
+      // no-op inofensivo (o teclado já estaria visível pelo requestFocus).
+      SystemChannels.textInput.invokeMethod('TextInput.show');
     });
   }
 
@@ -436,6 +461,17 @@ class _ContentTabViewState extends State<_ContentTabView> {
       _query = '';
       _searchController.clear();
     });
+  }
+
+  /// Chamado a partir do botão de lupa global na AppBar (ver
+  /// `_HomeScreenBodyState`), via `GlobalKey<_ContentTabViewState>` -- este
+  /// State não tem mais nenhum toggle próprio (ver CategoryFilterHeader).
+  void _toggleSearch() {
+    if (_searching) {
+      _closeSearch();
+    } else {
+      _openSearch();
+    }
   }
 
   @override
@@ -457,8 +493,6 @@ class _ContentTabViewState extends State<_ContentTabView> {
           searchController: _searchController,
           searchFocusNode: _searchFieldFocusNode,
           searchHintText: widget.searchHintText,
-          onOpenSearch: _openSearch,
-          onCloseSearch: _closeSearch,
           onQueryChanged: (value) => setState(() => _query = value),
           narrowCategoriesWidget: _CategoriesChips(type: widget.type),
           wideCategoriesWidget: _CategoriesSidebar(type: widget.type),
