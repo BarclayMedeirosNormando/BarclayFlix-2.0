@@ -60,6 +60,27 @@ class PlayerProvider extends ChangeNotifier {
     enableHardwareAcceleration: true,
   );
 
+  /// Meta de pré-carregamento por TEMPO (segundos), complementando o
+  /// [_demuxerCacheBytes] acima (que é só um teto de MEMÓRIA) — mapeia pra
+  /// `demuxer-readahead-secs` do mpv. Sem isso, o player só busca ficar
+  /// dentro do limite de bytes, sem garantir uma folga mínima de segundos
+  /// já baixados à frente da reprodução; com isso, tenta ativamente manter
+  /// essa folga, o que suaviza especificamente picos curtos de latência
+  /// (não confundir com queda de bitrate sustentada, que nenhum buffer
+  /// resolve). 15s é conservador o bastante pra não atrasar visivelmente o
+  /// início da reprodução.
+  static const _demuxerReadaheadSecs = '15';
+
+  /// Quanto tempo o mpv espera por atividade de rede antes de desistir da
+  /// conexão atual (`network-timeout`, em segundos) — painéis Xtream variam
+  /// bastante em latência/lentidão momentânea; um valor baixo demais
+  /// derruba a conexão à toa nesses picos, achando que caiu quando só
+  /// demorou. Mantido na MESMA ordem de grandeza dos timeouts do
+  /// [PlaybackHealthMonitor] (retry/stall, ver aquele arquivo) de propósito
+  /// — as duas camadas não podem divergir muito, senão uma delas vira
+  /// trabalho redundante ou a causa de uma espera desnecessariamente longa.
+  static const _networkTimeoutSecs = '15';
+
   /// [player]/[videoController] existem para injeção em testes — construir
   /// um [Player]/[VideoController] de verdade carrega a lib nativa do
   /// libmpv via FFI, o que não roda em `flutter_test` (sem engine/binários
@@ -68,11 +89,31 @@ class PlayerProvider extends ChangeNotifier {
   /// [FakePlatformPlayer] usado pelos testes.
   factory PlayerProvider({Player? player, VideoController? videoController}) {
     final effectivePlayer = player ?? Player(configuration: _playerConfiguration);
+    if (player == null) {
+      // Sem await de propósito (factory não é async) -- `setProperty` já
+      // espera a inicialização nativa internamente (ver
+      // media_kit-1.2.6/lib/src/player/native/player/real.dart), então não
+      // há necessidade de bloquear a criação do provider por isso.
+      unawaited(_applyNetworkTuning(effectivePlayer));
+    }
     final effectiveController = videoController ??
         (player == null
             ? VideoController(effectivePlayer, configuration: _videoControllerConfiguration)
             : null);
     return PlayerProvider._(effectivePlayer, effectiveController);
+  }
+
+  /// `cache`/`demuxer-readahead-secs`/`network-timeout` não têm equivalente
+  /// em [PlayerConfiguration] (só expõe bufferSize/logLevel/etc) — só dá
+  /// pra setar via [NativePlayer.setProperty], que fala direto com o
+  /// libmpv. Silenciosamente vira no-op em builds web (sem [NativePlayer]),
+  /// irrelevante aqui já que este app não roda em navegador.
+  static Future<void> _applyNetworkTuning(Player player) async {
+    final native = player.platform;
+    if (native is! NativePlayer) return;
+    await native.setProperty('cache', 'yes');
+    await native.setProperty('demuxer-readahead-secs', _demuxerReadaheadSecs);
+    await native.setProperty('network-timeout', _networkTimeoutSecs);
   }
 
   PlayerProvider._(this.player, this.videoController) {
