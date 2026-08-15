@@ -192,41 +192,54 @@ class _ServerSelectionScreenState extends State<ServerSelectionScreen> {
                             padding: const EdgeInsets.all(16),
                             child: isSelectingThis
                                 ? const CircularProgressIndicator()
-                                : Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      // Ícone circular com anel de destaque
-                                      // (estilo Duplecast: cada servidor
-                                      // salvo vira um "selo" redondo, não só
-                                      // um ícone solto) -- maior que antes
-                                      // (36 -> 34 dentro de um círculo de
-                                      // 64) pra ganhar presença sem estourar
-                                      // o card na largura máxima do grid
-                                      // (220, ver gridDelegate abaixo).
-                                      Container(
-                                        width: 64,
-                                        height: 64,
-                                        decoration: BoxDecoration(
-                                          shape: BoxShape.circle,
-                                          color: AppTheme.primaryColor.withAlpha(40),
-                                          border: Border.all(color: AppTheme.primaryColor, width: 2),
+                                // [TESTE] `FittedBox(scaleDown)` -- não um
+                                // tamanho de ícone fixo -- porque a altura
+                                // real da célula varia com a largura da
+                                // janela (childAspectRatio fixo no
+                                // gridDelegate abaixo): numa janela estreita
+                                // (más colunas, células mais baixas), o
+                                // ícone de 64px + texto de 2 linhas não cabe
+                                // e estoura (achado rodando splash_screen_test.dart,
+                                // que usa a janela padrão 800x600 do
+                                // flutter_test, bem mais estreita que a
+                                // 1100x900 usada pelos testes de D-Pad).
+                                // Encolhe proporcionalmente em vez de
+                                // estourar, sem precisar acertar um tamanho
+                                // fixo pra cada largura possível.
+                                : FittedBox(
+                                    fit: BoxFit.scaleDown,
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        // Ícone circular com anel de destaque
+                                        // (estilo Duplecast: cada servidor
+                                        // salvo vira um "selo" redondo, não só
+                                        // um ícone solto).
+                                        Container(
+                                          width: 64,
+                                          height: 64,
+                                          decoration: BoxDecoration(
+                                            shape: BoxShape.circle,
+                                            color: AppTheme.primaryColor.withAlpha(40),
+                                            border: Border.all(color: AppTheme.primaryColor, width: 2),
+                                          ),
+                                          alignment: Alignment.center,
+                                          child: const Icon(
+                                            Icons.dns_rounded,
+                                            size: 32,
+                                            color: AppTheme.primaryColor,
+                                          ),
                                         ),
-                                        alignment: Alignment.center,
-                                        child: const Icon(
-                                          Icons.dns_rounded,
-                                          size: 32,
-                                          color: AppTheme.primaryColor,
+                                        const SizedBox(height: 12),
+                                        Text(
+                                          label,
+                                          textAlign: TextAlign.center,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: AppTheme.cardTitleStyle,
                                         ),
-                                      ),
-                                      const SizedBox(height: 12),
-                                      Text(
-                                        label,
-                                        textAlign: TextAlign.center,
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: AppTheme.cardTitleStyle,
-                                      ),
-                                    ],
+                                      ],
+                                    ),
                                   ),
                           ),
                         ),

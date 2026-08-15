@@ -2,17 +2,20 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/theme/app_theme.dart';
+import '../../providers/auth_provider.dart';
 import '../../providers/profiles_provider.dart';
 import '../activation/activation_screen.dart';
-import '../home/home_screen.dart';
+import '../server_selection/server_selection_screen.dart';
 
 /// Tela de abertura: só a marca do app (mesmo ícone/estilo do header da
 /// ActivationScreen, ver [_Brand]), sem nenhum input. Fica visível
 /// exatamente pelo tempo real que [ProfilesProvider.loadProfiles] leva pra
 /// carregar o perfil salvo do [StorageService] (nunca um atraso artificial)
-/// e, se houver um, tentar revalidá-lo via ativação de dispositivo (deviceId,
-/// ver DeviceIdService) — só então navega pra HomeScreen (sucesso) ou
-/// ActivationScreen (sem perfil salvo, ou revalidação falhou).
+/// e, se houver um, rebuscar os servidores vinculados a este dispositivo
+/// (deviceId, ver DeviceIdService) — só então navega pra ServerSelectionScreen
+/// (sucesso; SEMPRE a tela inicial "de verdade" quando há um perfil salvo,
+/// mesmo com um único servidor -- nunca pula direto pro último usado, pedido
+/// explícito) ou ActivationScreen (sem perfil salvo, ou revalidação falhou).
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
 
@@ -35,11 +38,23 @@ class _SplashScreenState extends State<SplashScreen> {
 
     final savedProfile = provider.savedProfile;
     if (savedProfile != null) {
-      final success = await provider.selectProfile(savedProfile.id);
+      // [TESTE] Rebusca os servidores vinculados a este dispositivo (mesma
+      // chamada que "Trocar de servidor" já usa, ver HomeScreen._switchServer)
+      // em vez de logar direto no último servidor salvo -- o vínculo pode
+      // ter mudado desde o último acesso, e a escolha do servidor agora é
+      // sempre explícita, feita na ServerSelectionScreen.
+      final result = await provider.checkDeviceActivation();
       if (!mounted) return;
-      if (success) {
+
+      if (result != null) {
         Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const HomeScreen()),
+          MaterialPageRoute(
+            builder: (_) => ServerSelectionScreen(
+              servers: result.servidores,
+              existingProfileId: savedProfile.id,
+              nomeCliente: result.nomeCliente,
+            ),
+          ),
         );
         return;
       }
@@ -48,11 +63,12 @@ class _SplashScreenState extends State<SplashScreen> {
       // servidor removido etc) -- nunca cai aqui em silêncio: leva a
       // mensagem/código REAIS pra ActivationScreen decidir se mostra o erro
       // já de cara ou só começa a verificar em segundo plano.
+      final authProvider = context.read<AuthProvider>();
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
           builder: (_) => ActivationScreen(
-            initialErrorMessage: provider.errorFor(savedProfile.id),
-            initialErrorCode: provider.errorCodeFor(savedProfile.id),
+            initialErrorMessage: authProvider.errorMessage,
+            initialErrorCode: authProvider.errorCode,
           ),
         ),
       );

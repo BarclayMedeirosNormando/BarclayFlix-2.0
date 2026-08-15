@@ -18,6 +18,7 @@ import 'package:iptv_app/providers/profiles_provider.dart';
 import 'package:iptv_app/providers/settings_provider.dart';
 import 'package:iptv_app/screens/activation/activation_screen.dart';
 import 'package:iptv_app/screens/home/home_screen.dart';
+import 'package:iptv_app/screens/server_selection/server_selection_screen.dart';
 import 'package:iptv_app/screens/splash/splash_screen.dart';
 
 const _testDns = 'http://servidor-teste.com:8080';
@@ -135,15 +136,36 @@ void main() {
     expect(find.byType(SplashScreen), findsNothing);
   });
 
-  testWidgets('perfil salvo, dispositivo ainda ativado: pula direto pra HomeScreen, sem mostrar ActivationScreen', (
-    tester,
-  ) async {
-    await pumpSplashScreen(tester, seed: _savedProfile());
+  testWidgets(
+    'perfil salvo, dispositivo ainda ativado: vai pra ServerSelectionScreen (nunca pula direto pra HomeScreen)',
+    (tester) async {
+      await pumpSplashScreen(tester, seed: _savedProfile());
 
-    expect(find.byType(HomeScreen), findsOneWidget);
-    expect(find.byType(ActivationScreen), findsNothing);
-    expect(find.byType(SplashScreen), findsNothing);
-  });
+      // [TESTE] ServerSelectionScreen é SEMPRE a tela inicial quando há um
+      // perfil salvo, mesmo com um único servidor vinculado -- nunca mais
+      // loga direto no último usado (pedido explícito). A escolha real do
+      // servidor (e o login Xtream de fato) só acontece quando o usuário
+      // toca num card ali, não aqui.
+      expect(find.byType(ServerSelectionScreen), findsOneWidget);
+      expect(find.text('Meu Servidor'), findsOneWidget);
+      expect(find.byType(ActivationScreen), findsNothing);
+      expect(find.byType(HomeScreen), findsNothing);
+      expect(find.byType(SplashScreen), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'perfil salvo: tocar no único servidor na ServerSelectionScreen alcançada pela Splash leva pra HomeScreen',
+    (tester) async {
+      await pumpSplashScreen(tester, seed: _savedProfile());
+
+      await tester.tap(find.text('Meu Servidor'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(HomeScreen), findsOneWidget);
+      expect(find.byType(ServerSelectionScreen), findsNothing);
+    },
+  );
 
   testWidgets(
     'perfil salvo com dispositivo inativo: NÃO trava em silêncio -- vai pra ActivationScreen já mostrando a mensagem real',
