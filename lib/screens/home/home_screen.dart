@@ -126,6 +126,17 @@ class _HomeScreenBodyState extends State<_HomeScreenBody> {
   final FocusScopeNode _sectionSidebarScope = FocusScopeNode(debugLabel: 'section_sidebar_scope');
   final FocusScopeNode _contentScope = FocusScopeNode(debugLabel: 'home_content_scope');
 
+  // [TESTE] Busca/só-favoritos/atualizar (AppBar) ficam FORA dos dois
+  // escopos acima -- sem isolá-los também, ficaram simplesmente
+  // inalcançáveis por teclado/D-Pad depois do isolamento menu<->conteúdo
+  // (relatado testando de verdade: "só num consigo ir em favorito,
+  // atualizar e busca"). Mesmo padrão de escopo dedicado + FocusNodes
+  // endereçáveis + transição de borda já usado para menu<->conteúdo.
+  final FocusScopeNode _appBarActionsScope = FocusScopeNode(debugLabel: 'app_bar_actions_scope');
+  late final FocusNode _searchActionFocusNode = FocusNode(debugLabel: 'appbar_search');
+  late final FocusNode _favoriteActionFocusNode = FocusNode(debugLabel: 'appbar_favorite');
+  late final FocusNode _refreshActionFocusNode = FocusNode(debugLabel: 'appbar_refresh');
+
   late final List<FocusNode> _sectionFocusNodes = [
     for (final section in HomeSection.values) FocusNode(debugLabel: 'menu_${section.name}'),
   ];
@@ -184,6 +195,10 @@ class _HomeScreenBodyState extends State<_HomeScreenBody> {
     _contentProvider.removeListener(_onContentProviderChanged);
     _sectionSidebarScope.dispose();
     _contentScope.dispose();
+    _appBarActionsScope.dispose();
+    _searchActionFocusNode.dispose();
+    _favoriteActionFocusNode.dispose();
+    _refreshActionFocusNode.dispose();
     for (final node in _sectionFocusNodes) {
       node.dispose();
     }
@@ -226,6 +241,22 @@ class _HomeScreenBodyState extends State<_HomeScreenBody> {
   /// chamado quando seta esquerda no conteúdo não encontra mais nenhum alvo
   /// dentro do próprio `_contentScope` (já na borda esquerda).
   void _enterMenu() => _sectionFocusNodes[_selectedSection.index].requestFocus();
+
+  /// [TESTE] Entra nas ações da AppBar (busca/só-favoritos/atualizar) vindo
+  /// do conteúdo -- chamado quando seta pra CIMA no conteúdo não encontra
+  /// mais nenhum alvo dentro do `_contentScope` (já no topo). Busca/
+  /// favoritos ficam ausentes em "Continuar Assistindo" (ver
+  /// `_currentContentTabKey`) -- foca "Atualizar" direto nesse caso, já que
+  /// é a única ação sempre presente.
+  void _enterAppBarActions() {
+    final target = _currentContentTabKey != null ? _searchActionFocusNode : _refreshActionFocusNode;
+    target.requestFocus();
+  }
+
+  /// Devolve o foco pro conteúdo vindo das ações da AppBar -- chamado
+  /// quando seta pra BAIXO ali não encontra mais nenhum alvo (já na borda
+  /// de baixo do grupo de ações).
+  void _enterContentFromAppBar() => _enterContent();
 
   /// Entra no conteúdo vindo do menu.
   ///
@@ -486,31 +517,56 @@ class _HomeScreenBodyState extends State<_HomeScreenBody> {
           appBar: AppBar(
             title: Text(connectedServerName ?? 'BarclayFlix 2.0'),
             actions: [
-              // Ausente na aba "Continuar Assistindo" (_currentContentTabKey
-              // null ali, ver getter) -- essa aba não tem nenhum conteúdo
-              // filtrável por texto.
-              if (_currentContentTabKey != null)
-                IconButton(
-                  icon: Icon(_isCurrentTabSearching ? Icons.close : Icons.search),
-                  tooltip: _isCurrentTabSearching ? 'Fechar busca' : 'Buscar',
-                  onPressed: _toggleCurrentSearch,
+              // [TESTE] Escopo/borda dedicados (ver `_appBarActionsScope`)
+              // -- sem isso, busca/só-favoritos/atualizar ficam fora dos
+              // dois escopos de menu/conteúdo e viram inalcançáveis por
+              // teclado/D-Pad (relatado testando de verdade).
+              Actions(
+                actions: {
+                  DirectionalFocusIntent: _BoundaryDirectionalFocusAction(
+                    onBoundary: (direction) {
+                      if (direction == TraversalDirection.down) _enterContentFromAppBar();
+                    },
+                  ),
+                },
+                child: FocusScope(
+                  node: _appBarActionsScope,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Ausente na aba "Continuar Assistindo"
+                      // (_currentContentTabKey null ali, ver getter) --
+                      // essa aba não tem nenhum conteúdo filtrável por
+                      // texto.
+                      if (_currentContentTabKey != null)
+                        IconButton(
+                          focusNode: _searchActionFocusNode,
+                          icon: Icon(_isCurrentTabSearching ? Icons.close : Icons.search),
+                          tooltip: _isCurrentTabSearching ? 'Fechar busca' : 'Buscar',
+                          onPressed: _toggleCurrentSearch,
+                        ),
+                      if (_currentContentTabKey != null)
+                        IconButton(
+                          focusNode: _favoriteActionFocusNode,
+                          icon: Icon(_isCurrentTabFavoritesOnly ? Icons.favorite : Icons.favorite_border),
+                          tooltip: _isCurrentTabFavoritesOnly ? 'Mostrar tudo' : 'Só favoritos',
+                          onPressed: _toggleCurrentFavoritesOnly,
+                        ),
+                      IconButton(
+                        focusNode: _refreshActionFocusNode,
+                        icon: _refreshing
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2.4),
+                              )
+                            : const Icon(Icons.refresh),
+                        tooltip: 'Atualizar',
+                        onPressed: _refreshing ? null : () => _refreshCurrent(context),
+                      ),
+                    ],
+                  ),
                 ),
-              if (_currentContentTabKey != null)
-                IconButton(
-                  icon: Icon(_isCurrentTabFavoritesOnly ? Icons.favorite : Icons.favorite_border),
-                  tooltip: _isCurrentTabFavoritesOnly ? 'Mostrar tudo' : 'Só favoritos',
-                  onPressed: _toggleCurrentFavoritesOnly,
-                ),
-              IconButton(
-                icon: _refreshing
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2.4),
-                      )
-                    : const Icon(Icons.refresh),
-                tooltip: 'Atualizar',
-                onPressed: _refreshing ? null : () => _refreshCurrent(context),
               ),
               // No layout largo, Configurações/Trocar servidor/Sair moram
               // no grupo inferior do SectionSidebar (ver `body` abaixo) --
@@ -584,12 +640,15 @@ class _HomeScreenBodyState extends State<_HomeScreenBody> {
         Expanded(
           // Espelha o `Actions` do menu acima, na direção oposta: seta
           // esquerda já na borda esquerda do `_contentScope` (nada mais pra
-          // focar ali dentro) devolve o foco pro item ativo do menu.
+          // focar ali dentro) devolve o foco pro item ativo do menu. Seta
+          // pra CIMA já no topo (nada mais pra focar) entra nas ações da
+          // AppBar (busca/só-favoritos/atualizar) -- ver `_appBarActionsScope`.
           child: Actions(
             actions: {
               DirectionalFocusIntent: _BoundaryDirectionalFocusAction(
                 onBoundary: (direction) {
                   if (direction == TraversalDirection.left) _enterMenu();
+                  if (direction == TraversalDirection.up) _enterAppBarActions();
                 },
               ),
             },

@@ -619,6 +619,35 @@ void main() {
     });
   });
 
+  group('Foco: ações da AppBar (busca/só favoritos/atualizar)', () {
+    // [TESTE] Bug real relatado testando de verdade: depois de isolar
+    // menu<->conteúdo em FocusScopes dedicados (ver home_screen.dart), as
+    // ações da AppBar (busca/só-favoritos/atualizar) ficaram fora dos dois
+    // escopos -- e por isso simplesmente inalcançáveis por teclado/D-Pad
+    // ("só num consigo ir em favorito, atualizar e busca"). Corrigido com
+    // um terceiro escopo dedicado (`_appBarActionsScope`) + transição de
+    // borda seta-pra-cima (do conteúdo) / seta-pra-baixo (de volta).
+    testWidgets('seta pra cima no topo do conteúdo entra nas ações da AppBar; seta pra baixo volta', (tester) async {
+      await pumpHomeScreen(tester);
+
+      // Já em Live TV (seção inicial) -- entra na coluna de categorias.
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expect(isFocused(tester, find.text('Todos')), isTrue);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pump();
+      // Ícone (não a Tooltip que o envolve, ver `isFocused`) do botão de
+      // busca -- primeiro item alcançável, já que Live TV tem busca e
+      // favoritos disponíveis (ao contrário de "Continuar Assistindo").
+      expect(isFocused(tester, find.byIcon(Icons.search)), isTrue);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      expect(isFocused(tester, find.text('Todos')), isTrue, reason: 'precisa voltar pro conteúdo, não ficar preso na AppBar');
+    });
+  });
+
   group('Voltar/Escape na raiz', () {
     testWidgets('Escape na HomeScreen abre o diálogo de confirmação de saída', (tester) async {
       await pumpHomeScreen(tester);
