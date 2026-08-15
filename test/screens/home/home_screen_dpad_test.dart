@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -216,11 +217,16 @@ Future<void> pumpSettled(WidgetTester tester) async {
 /// -- usado pelo grupo "Layout estreito (mobile)" abaixo pra cair no
 /// BottomNavigationBar em vez do SectionSidebar (mesmo corte de
 /// `_sidebarBreakpoint`, ver home_screen.dart).
+/// [xtreamHandler], quando informado, substitui [_xtreamHandler] como
+/// backend da API Xtream -- usado pelo grupo "Foco: seção ainda carregando"
+/// abaixo pra simular uma resposta de rede atrasada (ver
+/// `_delayedVodCategoriesHandler`).
 Future<StorageService> pumpHomeScreen(
   WidgetTester tester, {
   Future<void> Function()? seedProgress,
   StorageService? storageService,
   Future<http.Response> Function(http.Request)? deviceAuthHandler,
+  Future<http.Response> Function(http.Request)? xtreamHandler,
   Size size = const Size(1100, 900),
 }) async {
   tester.view.physicalSize = size;
@@ -247,7 +253,7 @@ Future<StorageService> pumpHomeScreen(
     dns: _testDns,
     username: _testUser,
     password: _testPass,
-    client: MockClient(_xtreamHandler),
+    client: MockClient(xtreamHandler ?? _xtreamHandler),
   );
 
   await tester.pumpWidget(
@@ -565,6 +571,51 @@ void main() {
       await pumpSettled(tester);
 
       expect(find.text('Lançamentos'), findsOneWidget);
+
+      // [TESTE] Caso básico que faltava cobrir explicitamente: SEM nenhum
+      // atraso de rede artificial (categorias já carregadas de verdade,
+      // igual reportado pelo usuário testando no Windows -- "clica e
+      // entra, porém não movimenta"), a seta direita logo em seguida
+      // precisa entrar na coluna de categorias normalmente, mesmo
+      // mecanismo que já funciona pra Live TV.
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expect(isFocused(tester, find.text('Todos')), isTrue);
+      expect(isFocused(tester, find.text('Filmes')), isFalse);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      expect(isFocused(tester, find.text('Lançamentos')), isTrue);
+
+      // [TESTE] Bug real (relatado testando no Windows: "se eu iniciar por
+      // Filmes, Filmes funciona e o resto não") -- `_contentScope` é
+      // compartilhado por TODAS as seções (todas montadas ao mesmo tempo
+      // dentro do IndexedStack). `focusedChild` guardava o último item
+      // focado (aqui, "Lançamentos" de Filmes) mesmo depois da seção dele
+      // ser excluída (`ExcludeFocus`) ao trocar pra outra -- `_enterContent`
+      // tentava reaproveitar esse item ANTIGO/escondido, uma chamada de
+      // `requestFocus()` que falha em silêncio, nunca focando a seção
+      // NOVA de verdade. Sai de Filmes de volta pro menu e troca pra
+      // Séries -- precisa navegar ali igualzinho a Filmes, não travar.
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+      expect(isFocused(tester, find.text('Filmes')), isTrue);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      expect(isFocused(tester, find.text('Séries')), isTrue);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pumpSettled(tester);
+      expect(find.text('Dramas'), findsOneWidget);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expect(isFocused(tester, find.text('Todos')), isTrue, reason: 'precisa entrar na coluna de categorias de Séries, não ficar preso');
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      expect(isFocused(tester, find.text('Dramas')), isTrue, reason: 'precisa MOVER dentro de Séries, não travar parado');
     });
   });
 
@@ -1265,5 +1316,126 @@ void main() {
 
       expect(find.byType(SettingsScreen), findsOneWidget);
     });
+  });
+
+  group('Foco: seção ainda carregando (rede lenta)', () {
+    // [TESTE] Bug real relatado testando na TV TCL e depois confirmado
+    // também via teclado no Windows: ao contrário de Live TV (cujas
+    // categorias já chegam da rede desde o 1º frame do app, ver
+    // home_screen.dart initState), Filmes/Séries carregam categorias SOB
+    // DEMANDA só ao trocar de seção -- se a seta direita (ou Enter) chegar
+    // ANTES da resposta HTTP (fácil de acontecer numa conexão mais lenta
+    // ao painel, mas também numa rede rápida se o usuário for ágil o
+    // bastante), `_enterContent()` não achava nada focável ainda e
+    // desistia em silêncio, sem tentar de novo depois que os dados
+    // chegavam. Simula esse atraso segurando a resposta de
+    // `get_vod_categories` atrás de um `Completer` controlado pelo teste.
+    Future<http.Response> Function(http.Request) delayedVodCategoriesHandler(Completer<void> gate) {
+      return (request) async {
+        if (request.url.queryParameters['action'] == 'get_vod_categories') {
+          await gate.future;
+        }
+        return _xtreamHandler(request);
+      };
+    }
+
+    testWidgets(
+      'seta direita no menu, com Filmes ainda carregando, foca a categoria automaticamente assim que a resposta chega',
+      (tester) async {
+        final gate = Completer<void>();
+        await pumpHomeScreen(tester, xtreamHandler: delayedVodCategoriesHandler(gate));
+
+        // `focusItem` só move o foco de TECLADO -- sozinho, não chama
+        // `onTap`/`_selectSection` (achado corrigindo este teste: sem o
+        // Enter aqui, a seção ativa continuava "TV Ao Vivo" o tempo todo, e
+        // o teste "passava" testando Live TV por engano, não Filmes de
+        // verdade). Enter é o que efetivamente SELECIONA a seção.
+        focusItem(tester, find.text('Filmes'));
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+        await tester.pump();
+
+        // Resposta ainda presa no gate -- nada de Filmes deveria existir na
+        // árvore ainda, a seta não deve ter derrubado o app, e o foco
+        // continua exatamente onde estava (achado real: mover o foco pra
+        // um "escopo vazio" nesse meio-tempo é um estado instável -- ver
+        // `_enterContent` em home_screen.dart).
+        expect(find.text('Lançamentos'), findsNothing);
+        expect(isFocused(tester, find.text('Filmes')), isTrue);
+
+        // Libera a resposta -- ContentProvider.notifyListeners() dispara,
+        // e `_onContentProviderChanged` chama `_enterContent()` de novo --
+        // confiável agora porque foca um FocusNode dedicado e endereçável
+        // diretamente ([_firstCategoryFocusNodes] em home_screen.dart),
+        // sem precisar de nenhuma seta extra do usuário.
+        gate.complete();
+        await pumpSettled(tester);
+
+        expect(find.text('Lançamentos'), findsOneWidget);
+        expect(isFocused(tester, find.text('Todos')), isTrue);
+      },
+    );
+
+    testWidgets(
+      'trocar de seção ANTES da resposta atrasada chegar não sequestra o foco pra seção abandonada',
+      (tester) async {
+        // [TESTE] Bug real (mais sério que o de cima, achado testando de
+        // verdade): a 1ª versão deste fix guardava só um `bool` genérico
+        // ("há algo pendente"), sem lembrar QUAL seção pediu. Se o usuário
+        // trocasse de seção antes da resposta original chegar, a
+        // retentativa checava a seção ATIVA no momento em que a resposta
+        // tardía chegava -- puxando o foco pra QUALQUER seção que
+        // estivesse ativa naquele instante, no meio da navegação normal do
+        // usuário (relatado como "a navegação para depois de um tempo",
+        // inclusive voltando pra Live TV). Este teste prova que uma
+        // resposta tardia de uma seção ABANDONADA nunca mexe no foco.
+        final gate = Completer<void>();
+        await pumpHomeScreen(tester, xtreamHandler: delayedVodCategoriesHandler(gate));
+
+        // Entra em Filmes de verdade (Enter seleciona a seção -- só focar
+        // com `focusItem` não chama `_selectSection`, ver teste acima) --
+        // categorias presas no gate, fica pendente.
+        focusItem(tester, find.text('Filmes'));
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+        await tester.pump();
+        expect(find.text('Lançamentos'), findsNothing);
+
+        // Usuário desiste e troca pra Séries ANTES da resposta de Filmes
+        // chegar. O foco NUNCA saiu de "Filmes" no menu (Filmes ainda não
+        // tinha nada focável, ver `_enterContent` -- não move o foco pra
+        // lugar nenhum nesse caso), então seta baixo até "Séries" + Enter
+        // já é navegação de D-Pad real, direto -- não precisa "voltar" pro
+        // menu primeiro.
+        expect(isFocused(tester, find.text('Filmes')), isTrue);
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.pump();
+        expect(isFocused(tester, find.text('Séries')), isTrue);
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await pumpSettled(tester);
+        expect(find.text('Dramas'), findsOneWidget, reason: 'já deveria estar navegando em Séries normalmente');
+        expect(isFocused(tester, find.text('Séries')), isTrue);
+
+        // SÓ AGORA a resposta atrasada de Filmes chega -- não deveria fazer
+        // NADA: nem focar nada de Filmes, nem tirar o foco de onde o
+        // usuário está agora em Séries.
+        gate.complete();
+        await pumpSettled(tester);
+
+        expect(find.text('Lançamentos'), findsNothing, reason: 'nunca deveria ter entrado em Filmes de verdade');
+        expect(
+          isFocused(tester, find.text('Séries')),
+          isTrue,
+          reason: 'o foco não pode ter sido puxado pra longe de onde o usuário está agora',
+        );
+      },
+    );
   });
 }

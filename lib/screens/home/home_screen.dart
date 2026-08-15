@@ -130,14 +130,96 @@ class _HomeScreenBodyState extends State<_HomeScreenBody> {
     for (final section in HomeSection.values) FocusNode(debugLabel: 'menu_${section.name}'),
   ];
 
+  // [TESTE] Um FocusNode dedicado por [ContentType], plugado na categoria
+  // "Todos" (sempre a primeira, ver `ContentProvider._withAllCategory`) de
+  // cada seção -- mesmo mecanismo, pelo mesmo motivo, já usado com sucesso
+  // por [_sectionFocusNodes] no menu lateral. Substitui uma tentativa
+  // anterior baseada em `FocusTraversalPolicy.findFirstFocus`/`nextFocus`,
+  // que se mostrou pouco confiável quando chamada de fora do fluxo normal
+  // de tecla/D-Pad (achado empírico: às vezes devolvia o próprio
+  // `FocusScopeNode`, ou pousava num item errado, mesmo com a categoria já
+  // carregada e presente na árvore) -- um `FocusNode` endereçável
+  // diretamente não depende de nenhuma busca/travessia, então funciona
+  // igual não importa de onde é chamado (evento de tecla real ou este
+  // listener assíncrono).
+  late final Map<ContentType, FocusNode> _firstCategoryFocusNodes = {
+    for (final type in ContentType.values) type: FocusNode(debugLabel: 'first_category_${type.name}'),
+  };
+
+  // [TESTE] Guardado à parte (mesmo raciocínio do antigo `_contentProvider`
+  // desta classe, aposentado no redesenho do menu lateral e ressuscitado
+  // aqui por um motivo novo): `_onContentProviderChanged` precisa remover
+  // este mesmo listener em `dispose()`, e buscar `context.read<ContentProvider>()`
+  // de novo lá pode ser inseguro se o Element já estiver desativado.
+  late final ContentProvider _contentProvider = context.read<ContentProvider>();
+
+  // [TESTE] Qual seção `_enterContent()` tentou focar sem achar nada ainda
+  // (ver comentário lá) -- `null` quando não há nenhuma tentativa pendente.
+  // PRECISA ser a seção específica, não um bool genérico: guardar só
+  // "há algo pendente" e checar a seção ATIVA no momento em que os dados
+  // chegam (em vez da seção que realmente pediu) é o que causava um bug
+  // real -- se o usuário trocasse de seção antes da resposta da seção
+  // ORIGINAL chegar, o foco acabava sendo puxado pra QUALQUER seção que
+  // estivesse ativa quando aquela resposta tardia finalmente notificasse,
+  // no meio da navegação normal do usuário, mesmo em Live TV (que nunca
+  // pede isso sozinha) -- relatado como "a navegação para depois de um
+  // tempo, mesmo na Live TV" testando de verdade.
+  HomeSection? _pendingContentFocusSection;
+
+  @override
+  void initState() {
+    super.initState();
+    // Carrega as categorias da seção inicial e o progresso de "Continuar
+    // Assistindo" assim que a tela monta.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _ensureCategoriesLoaded(_selectedSection);
+      context.read<ContinueWatchingProvider>().load();
+      context.read<FavoritesProvider>().load();
+    });
+    _contentProvider.addListener(_onContentProviderChanged);
+  }
+
   @override
   void dispose() {
+    _contentProvider.removeListener(_onContentProviderChanged);
     _sectionSidebarScope.dispose();
     _contentScope.dispose();
     for (final node in _sectionFocusNodes) {
       node.dispose();
     }
+    for (final node in _firstCategoryFocusNodes.values) {
+      node.dispose();
+    }
     super.dispose();
+  }
+
+  /// [TESTE] Chama `_enterContent()` de novo assim que as categorias da
+  /// seção que estava esperando chegarem -- confiável AGORA porque
+  /// `_enterContent()` foca um `FocusNode` dedicado e endereçável
+  /// diretamente ([_firstCategoryFocusNodes], plugado na categoria "Todos"
+  /// de cada tipo), não mais uma busca de traversal-policy (`findFirstFocus`/
+  /// `nextFocus`) -- essas se mostraram pouco confiáveis quando chamadas de
+  /// fora do fluxo normal de tecla/D-Pad (achado empírico: às vezes
+  /// devolviam o próprio `FocusScopeNode`, ou pousavam num item errado,
+  /// mesmo com a categoria já carregada e presente na árvore). Um
+  /// `FocusNode.requestFocus()` direto não tem essa ambiguidade, então
+  /// funciona igual não importa de onde é chamado.
+  ///
+  /// Só age se a seção pendente ainda for a seção ATIVA agora -- se o
+  /// usuário já trocou de seção antes dos dados chegarem, a intenção
+  /// original de entrar ali não faz mais sentido; simplesmente espera (sem
+  /// limpar [_pendingContentFocusSection]) até o usuário voltar pra ela,
+  /// se algum dia voltar.
+  void _onContentProviderChanged() {
+    final pendingSection = _pendingContentFocusSection;
+    if (pendingSection == null || pendingSection != _selectedSection) return;
+
+    final type = pendingSection.contentType;
+    if (type == null || _contentProvider.categoriesFor(type).isEmpty) return;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _enterContent();
+    });
   }
 
   /// Devolve o foco pro item do menu correspondente à seção ATIVA --
@@ -145,17 +227,68 @@ class _HomeScreenBodyState extends State<_HomeScreenBody> {
   /// dentro do próprio `_contentScope` (já na borda esquerda).
   void _enterMenu() => _sectionFocusNodes[_selectedSection.index].requestFocus();
 
-  /// Entra no conteúdo vindo do menu. `FocusScopeNode.requestFocus()` SEM
-  /// argumento só refoca automaticamente o último descendente focado
-  /// (`focusedChild`) -- na primeira vez entrando numa seção (nenhum
-  /// `focusedChild` ainda), ele foca o PRÓPRIO nó do escopo em vez de um
-  /// item de verdade (comportamento documentado do `FocusScopeNode`, não um
-  /// bug), então a busca do primeiro item focável (`findFirstFocus`) precisa
-  /// ser feita à mão nesse caso.
+  /// Entra no conteúdo vindo do menu.
+  ///
+  /// [TESTE] Live TV/Filmes/Séries usam [_firstCategoryFocusNodes] (um
+  /// `FocusNode` dedicado por [ContentType], plugado na categoria "Todos")
+  /// -- endereçável direto, sem busca de traversal-policy nenhuma, o mesmo
+  /// mecanismo confiável já usado pro menu lateral ([_sectionFocusNodes]).
+  /// "Continuar Assistindo" (sem [ContentType]/sem categorias) ainda usa
+  /// `findFirstFocus` como reserva -- menos crítico ali, o progresso salvo
+  /// carrega local (sem espera de rede), então a janela de "nada focável
+  /// ainda" é bem mais curta.
+  ///
+  /// Achado testando numa TV real: ao contrário de Live TV (cujas
+  /// categorias já carregam desde o 1º frame do app, ver `initState`),
+  /// Filmes/Séries carregam SOB DEMANDA só quando a seção é selecionada
+  /// (`_selectSection` -> `_ensureCategoriesLoaded`) -- se a seta direita
+  /// chegar antes da resposta da rede (bem provável numa conexão mais
+  /// lenta ao painel), o nó dedicado ainda não está pronto/anexado. Quando
+  /// isso acontece, NÃO move o foco pra `_contentScope` diretamente --
+  /// achado empírico: focar um `FocusScopeNode` sem nenhum descendente
+  /// focável não é um estado estável/previsível (o Flutter pode devolver
+  /// `primaryFocus` como um nó `Focus` ambíguo/ancestral qualquer, fazendo
+  /// a PRÓXIMA seta se comportar de forma imprevisível). Só marca
+  /// [_pendingContentFocusSection] (ver `_onContentProviderChanged`) e
+  /// deixa o foco exatamente onde já estava -- no item do menu que
+  /// disparou esta chamada.
   void _enterContent() {
-    final target = _contentScope.focusedChild ??
-        ReadingOrderTraversalPolicy().findFirstFocus(_contentScope, ignoreCurrentFocus: true);
-    (target ?? _contentScope).requestFocus();
+    // [TESTE] Bug real (o motivo de só a PRIMEIRA seção visitada continuar
+    // navegável): `_contentScope` é UM SÓ, compartilhado por todas as 4
+    // seções (todas montadas ao mesmo tempo dentro do IndexedStack, ver
+    // `_buildContentStack`) -- `focusedChild` guarda o ÚLTIMO item
+    // focado, mesmo depois da seção dele ter sido excluída (`ExcludeFocus`)
+    // ao trocar pra outra seção. Sem o `canRequestFocus` abaixo, esta
+    // função tentava reaproveitar esse item ANTIGO/escondido -- uma
+    // chamada de `requestFocus()` que falha em silêncio (o nó não pode
+    // mais receber foco), nunca caindo no branch de baixo que focaria a
+    // categoria certa da seção ATUAL.
+    final focusedChild = _contentScope.focusedChild;
+    if (focusedChild != null && focusedChild.canRequestFocus) {
+      _pendingContentFocusSection = null;
+      focusedChild.requestFocus();
+      return;
+    }
+
+    final type = _selectedSection.contentType;
+    if (type != null) {
+      final firstCategoryNode = _firstCategoryFocusNodes[type];
+      if (firstCategoryNode == null || !firstCategoryNode.canRequestFocus) {
+        _pendingContentFocusSection = _selectedSection;
+        return;
+      }
+      _pendingContentFocusSection = null;
+      firstCategoryNode.requestFocus();
+      return;
+    }
+
+    final target = ReadingOrderTraversalPolicy().findFirstFocus(_contentScope, ignoreCurrentFocus: true);
+    if (target == null || target == _contentScope) {
+      _pendingContentFocusSection = _selectedSection;
+      return;
+    }
+    _pendingContentFocusSection = null;
+    target.requestFocus();
   }
 
   // Liga só durante a re-busca de servidores de "Trocar de servidor" (ver
@@ -179,18 +312,6 @@ class _HomeScreenBodyState extends State<_HomeScreenBody> {
   GlobalKey<_ContentTabViewState>? get _currentContentTabKey {
     final type = _selectedSection.contentType;
     return type == null ? null : _contentTabKeys[type.index];
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    // Carrega as categorias da seção inicial e o progresso de "Continuar
-    // Assistindo" assim que a tela monta.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _ensureCategoriesLoaded(_selectedSection);
-      context.read<ContinueWatchingProvider>().load();
-      context.read<FavoritesProvider>().load();
-    });
   }
 
   /// [TESTE] Troca a seção exibida (chamado pelo `SectionSidebar`) --
@@ -533,6 +654,7 @@ class _HomeScreenBodyState extends State<_HomeScreenBody> {
           key: _contentTabKeys[ContentType.live.index],
           type: ContentType.live,
           searchHintText: 'Buscar canal...',
+          firstCategoryFocusNode: _firstCategoryFocusNodes[ContentType.live]!,
           streamsPanelBuilder: (query, favoritesOnly) =>
               _LiveStreamsPanel(searchQuery: query, favoritesOnly: favoritesOnly),
         );
@@ -541,6 +663,7 @@ class _HomeScreenBodyState extends State<_HomeScreenBody> {
           key: _contentTabKeys[ContentType.vod.index],
           type: ContentType.vod,
           searchHintText: 'Buscar filme...',
+          firstCategoryFocusNode: _firstCategoryFocusNodes[ContentType.vod]!,
           streamsPanelBuilder: (query, favoritesOnly) =>
               _VodGrid(searchQuery: query, favoritesOnly: favoritesOnly),
         );
@@ -549,6 +672,7 @@ class _HomeScreenBodyState extends State<_HomeScreenBody> {
           key: _contentTabKeys[ContentType.series.index],
           type: ContentType.series,
           searchHintText: 'Buscar série...',
+          firstCategoryFocusNode: _firstCategoryFocusNodes[ContentType.series]!,
           streamsPanelBuilder: (query, favoritesOnly) =>
               _SeriesGrid(searchQuery: query, favoritesOnly: favoritesOnly),
         );
@@ -567,6 +691,18 @@ class _HomeScreenBodyState extends State<_HomeScreenBody> {
 /// que TÊM alvo dentro do escopo continuam funcionando idênticas a antes;
 /// só a direção de borda (configurada via [onBoundary]) ganha um
 /// comportamento extra de "sair do escopo".
+///
+/// [TESTE] Achado empírico rodando os testes deste redesign:
+/// `FocusNode.focusInDirection` pode mudar `primaryFocus` pra um nó `Focus`
+/// ambíguo/ancestral (sem `debugLabel`, não um item de verdade da árvore)
+/// mesmo quando devolve `false` (não achou nenhum alvo) -- um efeito
+/// colateral do próprio Flutter, não um bug deste código. Sem desfazer
+/// isso, a seta SEGUINTE (mesmo numa direção diferente) parte desse nó
+/// ambíguo em vez de de onde o usuário realmente estava, produzindo saltos
+/// imprevisíveis (ex: seta direita sem efeito aparente, seguida de seta
+/// baixo pousando em "TV Ao Vivo" no menu em vez do item seguinte ao que
+/// estava focado). Por isso [origin] é sempre restaurado explicitamente
+/// antes de chamar [onBoundary] quando a busca falha.
 class _BoundaryDirectionalFocusAction extends Action<DirectionalFocusIntent> {
   _BoundaryDirectionalFocusAction({required this.onBoundary});
 
@@ -574,8 +710,12 @@ class _BoundaryDirectionalFocusAction extends Action<DirectionalFocusIntent> {
 
   @override
   Object? invoke(DirectionalFocusIntent intent) {
-    final moved = FocusManager.instance.primaryFocus?.focusInDirection(intent.direction) ?? false;
-    if (!moved) onBoundary(intent.direction);
+    final origin = FocusManager.instance.primaryFocus;
+    final moved = origin?.focusInDirection(intent.direction) ?? false;
+    if (!moved) {
+      origin?.requestFocus();
+      onBoundary(intent.direction);
+    }
     return null;
   }
 }
@@ -595,10 +735,18 @@ class _ContentTabView extends StatefulWidget {
   final String searchHintText;
   final Widget Function(String searchQuery, bool favoritesOnly) streamsPanelBuilder;
 
+  /// [TESTE] Plugado na categoria "Todos" (sempre a primeira, ver
+  /// `ContentProvider._withAllCategory`) de `_CategoriesSidebar`/
+  /// `_CategoriesChips` -- dá pra `_HomeScreenBodyState._enterContent()`
+  /// focar direto ao entrar vindo do menu lateral, sem depender de nenhuma
+  /// busca de traversal-policy (ver doc de `_firstCategoryFocusNodes` lá).
+  final FocusNode firstCategoryFocusNode;
+
   const _ContentTabView({
     super.key,
     required this.type,
     required this.searchHintText,
+    required this.firstCategoryFocusNode,
     required this.streamsPanelBuilder,
   });
 
@@ -673,8 +821,10 @@ class _ContentTabViewState extends State<_ContentTabView> {
           searchFocusNode: _searchFieldFocusNode,
           searchHintText: widget.searchHintText,
           onQueryChanged: (value) => setState(() => _query = value),
-          narrowCategoriesWidget: _CategoriesChips(type: widget.type),
-          wideCategoriesWidget: _CategoriesSidebar(type: widget.type),
+          narrowCategoriesWidget:
+              _CategoriesChips(type: widget.type, firstItemFocusNode: widget.firstCategoryFocusNode),
+          wideCategoriesWidget:
+              _CategoriesSidebar(type: widget.type, firstItemFocusNode: widget.firstCategoryFocusNode),
         );
 
         // `key` identifica esta aba especificamente em testes (ver
@@ -783,7 +933,12 @@ class _ContinueWatchingGrid extends StatelessWidget {
 class _CategoriesSidebar extends StatelessWidget {
   final ContentType type;
 
-  const _CategoriesSidebar({required this.type});
+  /// [TESTE] Plugado só no item de índice 0 (sempre "Todos", ver
+  /// `ContentProvider._withAllCategory`) -- ver doc completa em
+  /// `_HomeScreenBodyState._firstCategoryFocusNodes`.
+  final FocusNode firstItemFocusNode;
+
+  const _CategoriesSidebar({required this.type, required this.firstItemFocusNode});
 
   @override
   Widget build(BuildContext context) {
@@ -836,6 +991,7 @@ class _CategoriesSidebar extends StatelessWidget {
 
             return DpadFocusHighlight(
               key: ValueKey('sidebar_category_${type.name}_${category.id}'),
+              focusNode: index == 0 ? firstItemFocusNode : null,
               scaleOnFocus: false,
               borderRadius: BorderRadius.circular(4),
               // `Material(type: transparency)` próprio: o `DecoratedBox` do
@@ -884,7 +1040,10 @@ class _CategoriesSidebar extends StatelessWidget {
 class _CategoriesChips extends StatelessWidget {
   final ContentType type;
 
-  const _CategoriesChips({required this.type});
+  /// [TESTE] Mesmo raciocínio de `_CategoriesSidebar.firstItemFocusNode`.
+  final FocusNode firstItemFocusNode;
+
+  const _CategoriesChips({required this.type, required this.firstItemFocusNode});
 
   @override
   Widget build(BuildContext context) {
@@ -948,6 +1107,7 @@ class _CategoriesChips extends StatelessWidget {
 
               return DpadFocusHighlight(
                 key: ValueKey('chip_category_${type.name}_${category.id}'),
+                focusNode: index == 0 ? firstItemFocusNode : null,
                 scaleOnFocus: false,
                 borderRadius: BorderRadius.circular(20),
                 builder: (context, focusNode, hasFocus) => ChoiceChip(
