@@ -29,6 +29,7 @@ class StorageService {
   static const _keyFavorites = 'favorites';
   static const _keyPin = 'lock_pin';
   static const _keyProtectedCategories = 'protected_categories';
+  static const _keyVideoCompatibilityMode = 'video_compatibility_mode';
 
   final FlutterSecureStorage _storage;
 
@@ -216,6 +217,23 @@ class StorageService {
   Future<void> clearPin() async {
     await _storage.delete(key: _keyPin);
     await _storage.delete(key: _keyProtectedCategories);
+  }
+
+  /// Preferência (não segredo, por isso `shared_preferences` e não
+  /// `flutter_secure_storage`) que força o player a decodificar vídeo por
+  /// software em vez de hardware -- ver PlayerProvider._videoControllerConfiguration.
+  /// `false` por padrão (usa hardware, mais eficiente na maioria dos
+  /// aparelhos); alguns TVs/celulares têm decodificadores de hardware
+  /// instáveis com certos streams, daí o usuário poder desligar manualmente
+  /// pelo próprio aparelho afetado em vez do app tentar adivinhar.
+  Future<bool> getVideoCompatibilityMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_keyVideoCompatibilityMode) ?? false;
+  }
+
+  Future<void> setVideoCompatibilityMode(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyVideoCompatibilityMode, enabled);
   }
 
   /// IDs de categoria protegidos de [contentType] ('live'/'vod'/'series' --

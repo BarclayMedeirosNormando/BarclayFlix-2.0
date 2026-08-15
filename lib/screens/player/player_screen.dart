@@ -11,6 +11,7 @@ import 'package:window_manager/window_manager.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/watch_progress.dart';
 import '../../providers/player_provider.dart';
+import '../../providers/settings_provider.dart';
 import '../../services/playback_health_monitor.dart';
 import '../../widgets/dpad_focus_highlight.dart';
 
@@ -67,7 +68,19 @@ class PlayerScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
-      create: (_) => playerProvider ?? PlayerProvider(),
+      // [TESTE] `forceSoftwareDecode` vem do toggle manual "Modo
+      // compatibilidade de vídeo" (Configurações) -- ver
+      // PlayerProvider._videoControllerConfigurationSoftware pro porquê.
+      // Lido aqui (não dentro do PlayerProvider) porque o SettingsProvider
+      // já é um Provider de app inteiro (ver main.dart) e o valor já está
+      // carregado nesse ponto da navegação -- criar/injetar outro
+      // StorageService dentro do PlayerProvider só pra isso duplicaria a
+      // fonte da verdade.
+      create: (context) =>
+          playerProvider ??
+          PlayerProvider(
+            forceSoftwareDecode: context.read<SettingsProvider>().videoCompatibilityMode,
+          ),
       child: _PlayerScreenBody(
         url: url,
         title: title,

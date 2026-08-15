@@ -55,8 +55,27 @@ class PlayerProvider extends ChangeNotifier {
   /// `enableHardwareAcceleration: true` já é o padrão do pacote — mantido
   /// explícito aqui só como documentação da intenção, não uma mudança de
   /// comportamento.
-  static const _videoControllerConfiguration = VideoControllerConfiguration(
+  static const _videoControllerConfigurationHardware = VideoControllerConfiguration(
     hwdec: 'auto-safe',
+    enableHardwareAcceleration: true,
+  );
+
+  /// [TESTE] Usada quando o usuário liga "Modo compatibilidade de vídeo"
+  /// nas Configurações (ver SettingsProvider.videoCompatibilityMode) --
+  /// `hwdec: 'no'` desliga decodificação por hardware por completo, ao
+  /// contrário do fallback automático em [_openWithHwdecFallback] (que só
+  /// reage a timeout no `open()`, nunca a engasgo/travamento DURANTE a
+  /// reprodução já em curso). Existe pra cobrir os casos que aquele fallback
+  /// não cobre: decodificador de hardware que abre a mídia normalmente mas
+  /// solta frame/engasga periodicamente em certos streams (relatado em TV
+  /// TCL com VOD). Custa mais CPU/energia do aparelho -- por isso é opt-in
+  /// manual, não automático. `enableHardwareAcceleration: true` continua
+  /// ligado de propósito -- ela controla a superfície de RENDERIZAÇÃO
+  /// (textura via GPU), independente de `hwdec` (que controla só a
+  /// DECODIFICAÇÃO); desligar as duas juntas puniria performance à toa numa
+  /// dimensão que não é a causa do problema.
+  static const _videoControllerConfigurationSoftware = VideoControllerConfiguration(
+    hwdec: 'no',
     enableHardwareAcceleration: true,
   );
 
@@ -99,7 +118,11 @@ class PlayerProvider extends ChangeNotifier {
   /// nativos). Em produção nunca são passados, então a configuração de
   /// hwdec/buffer acima SEMPRE se aplica a qualquer player real — nunca ao
   /// [FakePlatformPlayer] usado pelos testes.
-  factory PlayerProvider({Player? player, VideoController? videoController}) {
+  factory PlayerProvider({
+    Player? player,
+    VideoController? videoController,
+    bool forceSoftwareDecode = false,
+  }) {
     final effectivePlayer = player ?? Player(configuration: _playerConfiguration);
     if (player == null) {
       // Sem await de propósito (factory não é async) -- `setProperty` já
@@ -110,7 +133,12 @@ class PlayerProvider extends ChangeNotifier {
     }
     final effectiveController = videoController ??
         (player == null
-            ? VideoController(effectivePlayer, configuration: _videoControllerConfiguration)
+            ? VideoController(
+                effectivePlayer,
+                configuration: forceSoftwareDecode
+                    ? _videoControllerConfigurationSoftware
+                    : _videoControllerConfigurationHardware,
+              )
             : null);
     return PlayerProvider._(effectivePlayer, effectiveController);
   }

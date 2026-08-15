@@ -4,12 +4,20 @@ import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:iptv_app/data/services/storage_service.dart';
 import 'package:iptv_app/providers/settings_provider.dart';
 import 'package:iptv_app/screens/settings/settings_screen.dart';
 
 Future<void> pumpSettingsScreen(WidgetTester tester, {SettingsProvider? settingsProvider}) async {
+  // [TESTE] SettingsProvider.load() agora também lê o modo de compatibilidade
+  // de vídeo via `shared_preferences` (ver StorageService.getVideoCompatibilityMode)
+  // -- sem mock, `SharedPreferences.getInstance()` fica esperando um canal de
+  // plataforma que não existe em teste, travando o `load()` (mesmo padrão já
+  // usado em player_provider_test.dart/storage_service_test.dart).
+  SharedPreferences.setMockInitialValues({});
+
   SettingsProvider provider;
   if (settingsProvider != null) {
     // Já veio com seu próprio backend/estado prontos (ex: PIN já definido

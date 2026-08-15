@@ -96,6 +96,25 @@ class SettingsScreen extends StatelessWidget {
                       style: OutlinedButton.styleFrom(foregroundColor: AppTheme.errorColor),
                     ),
                   ],
+                  const SizedBox(height: AppSpacing.xl),
+                  const Text(
+                    'Reprodução de vídeo',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: AppSpacing.xs),
+                  Text(
+                    'Ative se os vídeos travarem/engasgarem periodicamente neste '
+                    'aparelho específico (comum em algumas TVs). Desliga a '
+                    'decodificação por hardware, mais compatível porém mais '
+                    'pesada para o processador.',
+                    style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Modo compatibilidade de vídeo'),
+                    value: settings.videoCompatibilityMode,
+                    onChanged: (value) => settings.setVideoCompatibilityMode(value),
+                  ),
                 ],
               );
             },

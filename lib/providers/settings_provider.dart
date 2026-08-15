@@ -17,6 +17,13 @@ class SettingsProvider extends ChangeNotifier {
   bool _hasPin = false;
   bool get hasPin => _hasPin;
 
+  bool _videoCompatibilityMode = false;
+
+  /// Força decodificação de vídeo por software (desliga hwdec) -- toggle
+  /// manual pra quem tem um aparelho (TV/celular) com decodificador de
+  /// hardware instável em certos streams. Ver PlayerProvider/PlayerScreen.
+  bool get videoCompatibilityMode => _videoCompatibilityMode;
+
   Map<ContentType, Set<String>> _protectedCategoryIds = {
     for (final type in ContentType.values) type: <String>{},
   };
@@ -33,6 +40,13 @@ class SettingsProvider extends ChangeNotifier {
     }
     _hasPin = pin != null && pin.isNotEmpty;
     _protectedCategoryIds = loaded;
+    _videoCompatibilityMode = await _storageService.getVideoCompatibilityMode();
+    notifyListeners();
+  }
+
+  Future<void> setVideoCompatibilityMode(bool enabled) async {
+    await _storageService.setVideoCompatibilityMode(enabled);
+    _videoCompatibilityMode = enabled;
     notifyListeners();
   }
 
