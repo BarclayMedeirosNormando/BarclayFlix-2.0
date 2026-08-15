@@ -198,9 +198,14 @@ class ProfilesProvider extends ChangeNotifier {
     return null;
   }
 
+  /// [TESTE] Nunca mais anexa o DNS entre parênteses pra desambiguar nomes
+  /// repetidos -- a AppBar da HomeScreen mostra este valor sozinho como
+  /// título ("P2BRAS", nunca "P2BRAS (https://...)"), pedido explícito do
+  /// usuário. A ServerSelectionScreen (onde uma eventual duplicata
+  /// importaria de verdade) já mostra `server.nome` puro em cada card, não
+  /// este valor -- então nomes repetidos entre perfis salvos não causam
+  /// ambiguidade real em nenhuma tela.
   String _defaultDisplayName(ServerOption server) {
-    final base = server.nome.trim().isNotEmpty ? server.nome.trim() : server.dns;
-    final collision = _savedProfiles.any((profile) => profile.nomeExibicao == base);
-    return collision ? '$base (${server.dns})' : base;
+    return server.nome.trim().isNotEmpty ? server.nome.trim() : server.dns;
   }
 }
