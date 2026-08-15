@@ -170,29 +170,55 @@ class _ServerSelectionScreenState extends State<ServerSelectionScreen> {
 
                       return DpadFocusHighlight(
                         key: ValueKey('server_option_${server.dns}'),
+                        borderRadius: BorderRadius.circular(16),
                         builder: (context, focusNode, hasFocus) => InkWell(
                           autofocus: index == 0,
                           focusNode: focusNode,
                           onTap: isChoosing ? null : () => _choose(server),
-                          borderRadius: BorderRadius.circular(8),
+                          borderRadius: BorderRadius.circular(16),
                           child: Container(
                             decoration: BoxDecoration(
                               color: AppTheme.surfaceColor,
-                              borderRadius: BorderRadius.circular(8),
+                              borderRadius: BorderRadius.circular(16),
+                              // [TESTE] Anel sutil sempre visível (não só no
+                              // foco, que já tem seu próprio glow via
+                              // DpadFocusHighlight) -- dá mais presença ao
+                              // card parado, mais perto da referência
+                              // visual (ícones em destaque, não só texto
+                              // sobre um retângulo liso).
+                              border: Border.all(color: AppTheme.primaryColor.withAlpha(60)),
                             ),
                             alignment: Alignment.center,
-                            padding: const EdgeInsets.all(12),
+                            padding: const EdgeInsets.all(16),
                             child: isSelectingThis
                                 ? const CircularProgressIndicator()
                                 : Column(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      const Icon(
-                                        Icons.dns_rounded,
-                                        size: 36,
-                                        color: AppTheme.primaryColor,
+                                      // Ícone circular com anel de destaque
+                                      // (estilo Duplecast: cada servidor
+                                      // salvo vira um "selo" redondo, não só
+                                      // um ícone solto) -- maior que antes
+                                      // (36 -> 34 dentro de um círculo de
+                                      // 64) pra ganhar presença sem estourar
+                                      // o card na largura máxima do grid
+                                      // (220, ver gridDelegate abaixo).
+                                      Container(
+                                        width: 64,
+                                        height: 64,
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          color: AppTheme.primaryColor.withAlpha(40),
+                                          border: Border.all(color: AppTheme.primaryColor, width: 2),
+                                        ),
+                                        alignment: Alignment.center,
+                                        child: const Icon(
+                                          Icons.dns_rounded,
+                                          size: 32,
+                                          color: AppTheme.primaryColor,
+                                        ),
                                       ),
-                                      const SizedBox(height: 8),
+                                      const SizedBox(height: 12),
                                       Text(
                                         label,
                                         textAlign: TextAlign.center,

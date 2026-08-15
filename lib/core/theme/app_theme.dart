@@ -38,6 +38,14 @@ class AppTheme {
     shadows: [Shadow(color: Colors.black87, blurRadius: 8, offset: Offset(0, 1))],
   );
 
+  /// [TESTE] Fundo persistente da seção ATIVA no menu lateral (ver
+  /// SectionSidebar) — independente de foco, ao contrário do glow
+  /// transitório de [DpadFocusHighlight] (que usa `primaryColor.withAlpha(40)`
+  /// e só aparece com o D-Pad em cima do item). Alpha propositalmente mais
+  /// baixo que aquele (31 vs 40) pra não competir visualmente quando os
+  /// dois coincidem no mesmo item (seção ativa E focada ao mesmo tempo).
+  static const Color sidebarActiveBackground = Color(0x1FD85A30);
+
   static ThemeData get darkTheme {
     final base = ThemeData.dark(useMaterial3: true);
 

@@ -24,7 +24,9 @@ import 'package:iptv_app/screens/activation/activation_screen.dart';
 import 'package:iptv_app/screens/home/home_screen.dart';
 import 'package:iptv_app/screens/player/player_screen.dart';
 import 'package:iptv_app/screens/server_selection/server_selection_screen.dart';
+import 'package:iptv_app/screens/settings/settings_screen.dart';
 import 'package:iptv_app/screens/vod_details/vod_details_screen.dart';
+import 'package:iptv_app/widgets/section_sidebar.dart';
 
 import '../../test_helpers/fake_player.dart';
 
@@ -183,14 +185,23 @@ Future<void> pumpSettled(WidgetTester tester) async {
 
 /// Monta a HomeScreen com um [AuthProvider] já autenticado (via o seam
 /// `apiService` — ver AuthProvider) apontando pro [_xtreamHandler] acima, e
-/// com a janela larga o suficiente (>=700px) pra cair no layout
-/// desktop/TV com sidebar fixa, que é o layout sob teste em toda a tarefa.
+/// com a janela larga o suficiente pra cair no layout desktop/TV: menu
+/// lateral fixo (`SectionSidebar`, `sectionSidebarWidth = 220`) + dentro de
+/// cada seção, a sidebar de categorias (`_sidebarBreakpoint = 700`, ver
+/// home_screen.dart) em vez de chips horizontais.
 ///
-/// 900px (não mais largo) é proposital: com os 6 filmes fixos do dataset
-/// acima, essa largura garante 2 linhas no grid (4 colunas), necessário
-/// para testar navegação por linha/coluna. Confirmado empiricamente — em
-/// 1400px as 6 colunas cabem numa linha só e não haveria uma "próxima
-/// linha" pra descer.
+/// 1100px (não 900px como antes do menu lateral existir) é proposital: o
+/// `LayoutBuilder` de `_ContentTabView` decide sidebar-vs-chips a partir da
+/// largura que SOBRA depois do `SectionSidebar` (220px) + divisor (1px), não
+/// da largura total da janela — em 900px, sobrariam só ~679px pra
+/// `_ContentTabView`, abaixo do próprio breakpoint de 700px que ele usa
+/// internamente, fazendo a categoria virar chips por engano (achado
+/// empírico corrigindo os testes deste arquivo pro menu lateral). 1100px
+/// garante ~879px de sobra, folga confortável acima do breakpoint. Com os
+/// 13 filmes fixos do dataset acima, essa largura ainda garante pelo menos
+/// 2 linhas no grid — os testes de navegação descobrem o número real de
+/// colunas empiricamente (ver `firstPos`/`secondPos` mais abaixo), não
+/// presumem um valor fixo.
 /// [storageService], quando informado, entra como o `StorageService` do
 /// [ProfilesProvider] montado junto com a HomeScreen.
 /// Devolve o [StorageService] usado, pra quem chamar poder inspecionar o que
@@ -201,13 +212,18 @@ Future<void> pumpSettled(WidgetTester tester) async {
 /// ativação em segundo plano). Sem ele, o [AuthProvider] usa o
 /// `DeviceAuthService()` padrão (rede de verdade), o que é aceitável pros
 /// demais testes deste arquivo porque eles nunca disparam essa checagem.
+/// [size], quando informado, sobrescreve a largura larga (1100x900) padrão
+/// -- usado pelo grupo "Layout estreito (mobile)" abaixo pra cair no
+/// BottomNavigationBar em vez do SectionSidebar (mesmo corte de
+/// `_sidebarBreakpoint`, ver home_screen.dart).
 Future<StorageService> pumpHomeScreen(
   WidgetTester tester, {
   Future<void> Function()? seedProgress,
   StorageService? storageService,
   Future<http.Response> Function(http.Request)? deviceAuthHandler,
+  Size size = const Size(1100, 900),
 }) async {
-  tester.view.physicalSize = const Size(900, 900);
+  tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
 
@@ -327,56 +343,63 @@ Finder textWidget(String data) {
   return find.byWidgetPredicate((widget) => widget is Text && widget.data == data);
 }
 
-/// Confirma que ALGUM nó de foco já está ativo assim que a tela abre, SEM
-/// nenhuma chamada manual de `requestFocus()` (nem `focusItem` acima) —
-/// essa é a condição real que faz o Escape/D-Pad funcionarem desde o
-/// primeiro frame (ver `Focus(autofocus: true)` em home_screen.dart).
-/// Localiza o `Focus` raiz da tela pelo `debugLabel` do seu `FocusNode`
-/// (não por `autofocus`/`skipTraversal`: o próprio `Navigator` do Flutter
-/// já cria um `Focus` interno com essa MESMA combinação de propriedades
-/// para cada rota — achado rodando este teste, que por isso não pode
-/// distinguir "nosso" nó do nó interno do framework só por elas).
-bool _rootHasAutofocus(WidgetTester tester) {
-  final finder = find.byWidgetPredicate((w) => w is Focus && w.focusNode?.debugLabel == 'home-screen-root');
-  final focusNode = tester.widget<Focus>(finder).focusNode;
-  return focusNode != null && focusNode.hasFocus;
-}
-
 void main() {
   group('Autofoco inicial (sem foco manual)', () {
-    testWidgets('a tela já tem um nó de foco ativo assim que abre, sem nenhum requestFocus() manual', (tester) async {
+    testWidgets('o item ativo do menu lateral (TV Ao Vivo) já fica focado sozinho, sem nenhum requestFocus() manual', (tester) async {
       await pumpHomeScreen(tester);
 
       // Nenhum focusItem()/requestFocus() antes desta linha — é exatamente
-      // essa ausência que reproduziria o bug relatado em dispositivo
-      // físico (D-Pad sem efeito nenhum): sem autofoco, nada na árvore
-      // teria foco de teclado pra receber a primeira seta ou o Escape.
-      expect(_rootHasAutofocus(tester), isTrue);
+      // essa ausência que reproduziria o bug relatado em dispositivo físico
+      // (D-Pad sem efeito nenhum): sem autofoco, nada na árvore teria foco
+      // de teclado pra receber a primeira seta ou o Escape. Substitui o
+      // hack antigo de `_rootFocusNode` (aposentado neste redesign, ver
+      // home_screen.dart) -- o item concreto do menu já existe desde o 1º
+      // frame, sem depender de categorias chegarem da rede.
+      expect(isFocused(tester, find.text('TV Ao Vivo')), isTrue);
     });
 
-    testWidgets('a primeira categoria já fica focada sozinha, e a seta move pra próxima — tudo sem foco manual', (tester) async {
+    testWidgets('seta direita a partir do menu entra na sidebar de categorias da seção ativa (Live TV)', (tester) async {
       await pumpHomeScreen(tester);
+      expect(isFocused(tester, find.text('TV Ao Vivo')), isTrue);
 
-      // O salto automático do wrapper invisível pra primeira categoria já
-      // aconteceu sozinho (ver `_handOffInitialFocusIfReady` em
-      // home_screen.dart) — sem ele, nenhuma seta moveria o foco pra lugar
-      // nenhum a partir daqui (achado empírico: busca DIRECIONAL, ao
-      // contrário de `nextFocus`/Tab, não atravessa a fronteira de um nó
-      // `skipTraversal` sozinha). "Todos" (categoria sintética, ver
-      // ContentProvider.allLiveCategoriesId) é sempre a PRIMEIRA opção em
-      // Live TV -- por isso é ela, não "Esportes", quem recebe esse
-      // autofoco inicial.
+      // Fronteira de escopo GENUINAMENTE NOVA deste redesign (menu lateral
+      // isolado do conteúdo via FocusScope, ver `_sectionSidebarScope`/
+      // `_BoundaryDirectionalFocusAction` em home_screen.dart) -- sem a
+      // travessia manual implementada lá, esta seta não moveria o foco pra
+      // lugar nenhum (o FocusScope do menu não teria mais nenhum candidato
+      // à direita dentro de si mesmo).
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+
+      // "Todos" (categoria sintética, ver ContentProvider.allLiveCategoriesId)
+      // é sempre a PRIMEIRA opção em Live TV -- é ela quem recebe o foco ao
+      // entrar no conteúdo pela primeira vez (nenhum item foi focado antes,
+      // então `FocusScopeNode.requestFocus()` cai no primeiro descendente
+      // focável, não num `focusedChild` lembrado).
       expect(isFocused(tester, find.text('Todos')), isTrue);
+      expect(isFocused(tester, find.text('TV Ao Vivo')), isFalse);
 
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pump();
-
       expect(isFocused(tester, find.text('Esportes')), isTrue);
 
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pump();
-
       expect(isFocused(tester, find.text('Notícias')), isTrue);
+    });
+
+    testWidgets('seta esquerda na sidebar de categorias devolve o foco pro item ativo do menu', (tester) async {
+      await pumpHomeScreen(tester);
+
+      focusItem(tester, find.text('Esportes'));
+      await tester.pump();
+      expect(isFocused(tester, find.text('Esportes')), isTrue);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+
+      expect(isFocused(tester, find.text('Esportes')), isFalse);
+      expect(isFocused(tester, find.text('TV Ao Vivo')), isTrue, reason: 'esperava o foco de volta no item ativo do menu');
     });
   });
 
@@ -521,18 +544,20 @@ void main() {
       expect(find.text('Canal B (2)'), findsOneWidget);
     });
 
-    testWidgets('abas são navegáveis por seta e ativáveis via Enter, trocando o conteúdo', (tester) async {
+    testWidgets('itens do menu lateral são navegáveis por seta e ativáveis via Enter, trocando a seção', (tester) async {
       await pumpHomeScreen(tester);
 
-      // Sidebar de Live TV visível, VOD ainda não.
+      // Sidebar de categorias de Live TV visível, VOD ainda não -- prova
+      // que a seção só troca de verdade DEPOIS do Enter, não já na seta.
       expect(find.text('Esportes'), findsOneWidget);
       expect(find.text('Lançamentos'), findsNothing);
 
-      focusItem(tester, find.text('Live TV'));
-      await tester.pump();
-      expect(isFocused(tester, find.text('Live TV')), isTrue);
+      expect(isFocused(tester, find.text('TV Ao Vivo')), isTrue);
 
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      // Itens do menu ficam empilhados verticalmente (ver SectionSidebar) --
+      // seta PRA BAIXO (não pra direita, que sairia do menu, ver grupo
+      // "Autofoco inicial") move entre eles.
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pump();
       expect(isFocused(tester, find.text('Filmes')), isTrue);
 
@@ -643,26 +668,26 @@ void main() {
       );
     }
 
-    testWidgets('a aba "Continuar" sempre existe na TabBar, mesmo sem nada assistido (não oculta a aba inteira)', (
+    testWidgets('o item "Continuar Assistindo" sempre existe no menu, mesmo sem nada assistido (não some sozinho)', (
       tester,
     ) async {
       await pumpHomeScreen(tester);
 
-      expect(find.text('Continuar'), findsOneWidget);
+      expect(find.text('Continuar Assistindo'), findsOneWidget);
 
-      await tester.tap(find.text('Continuar'));
+      await tester.tap(find.text('Continuar Assistindo'));
       await pumpSettled(tester);
 
       expect(find.textContaining('Nada assistido ainda'), findsOneWidget);
     });
 
-    testWidgets('com progresso salvo, a aba "Continuar" mostra o card do item assistido', (tester) async {
+    testWidgets('com progresso salvo, a seção "Continuar Assistindo" mostra o card do item assistido', (tester) async {
       await pumpHomeScreen(
         tester,
         seedProgress: () => StorageService().saveProgress(buildProgress()),
       );
 
-      await tester.tap(find.text('Continuar'));
+      await tester.tap(find.text('Continuar Assistindo'));
       await pumpSettled(tester);
 
       expect(find.text('Filme Assistido'), findsOneWidget);
@@ -713,7 +738,7 @@ void main() {
         await Provider.of<ProfilesProvider>(providerContext, listen: false).loadProfiles();
         await tester.pump();
 
-        await tester.tap(find.widgetWithIcon(IconButton, Icons.swap_horiz));
+        await tester.tap(find.text('Trocar servidor'));
         await pumpSettled(tester);
 
         expect(find.byType(ServerSelectionScreen), findsOneWidget);
@@ -744,7 +769,7 @@ void main() {
       await Provider.of<ProfilesProvider>(providerContext, listen: false).loadProfiles();
       await tester.pump();
 
-      await tester.tap(find.widgetWithIcon(IconButton, Icons.swap_horiz));
+      await tester.tap(find.text('Trocar servidor'));
       await pumpSettled(tester);
 
       await tester.tap(find.text('P2BRAS'));
@@ -1035,7 +1060,7 @@ void main() {
       (tester) async {
         await pumpHomeScreen(tester);
 
-        await tester.tap(find.widgetWithText(Tab, 'Séries'));
+        await tester.tap(find.text('Séries'));
         await pumpSettled(tester);
 
         expect(inTab('series', find.text('Todos')), findsOneWidget);
@@ -1049,7 +1074,7 @@ void main() {
       (tester) async {
         await pumpHomeScreen(tester);
 
-        await tester.tap(find.widgetWithText(Tab, 'Séries'));
+        await tester.tap(find.text('Séries'));
         await pumpSettled(tester);
 
         expect(find.byIcon(Icons.search), findsOneWidget);
@@ -1079,7 +1104,7 @@ void main() {
     testWidgets('busca sem nenhum resultado mostra estado vazio próprio, sem travar a tela', (tester) async {
       await pumpHomeScreen(tester);
 
-      await tester.tap(find.widgetWithText(Tab, 'Séries'));
+      await tester.tap(find.text('Séries'));
       await pumpSettled(tester);
 
       await tester.tap(find.byIcon(Icons.search));
@@ -1095,7 +1120,7 @@ void main() {
     testWidgets('categorias de Séries são independentes das de VOD/Live TV (nunca misturadas)', (tester) async {
       await pumpHomeScreen(tester);
 
-      await tester.tap(find.widgetWithText(Tab, 'Séries'));
+      await tester.tap(find.text('Séries'));
       await pumpSettled(tester);
 
       // "Dramas" é a única categoria REAL vinda da API pra Séries -- as
@@ -1197,6 +1222,48 @@ void main() {
 
       expect(find.descendant(of: classicosRow, matching: find.byIcon(Icons.lock_open)), findsOneWidget);
       expect(find.text('Filme 11'), findsOneWidget, reason: 'desprotegida -- volta a aparecer em "Todos"');
+    });
+  });
+
+  group('Layout estreito (mobile)', () {
+    // Abaixo de `_sidebarBreakpoint` (700px, ver home_screen.dart), o menu
+    // lateral fixo vira uma BottomNavigationBar -- baseado em TOQUE, não em
+    // D-Pad (TVs renderizam largura >= 700px na prática; este layout só
+    // ativa em celular). 360px é uma largura típica de celular em retrato.
+    const narrowSize = Size(360, 800);
+
+    testWidgets('abaixo do breakpoint, mostra BottomNavigationBar em vez do menu lateral', (tester) async {
+      await pumpHomeScreen(tester, size: narrowSize);
+
+      expect(find.byType(BottomNavigationBar), findsOneWidget);
+      // O menu lateral largo tem um FocusScopeNode próprio (ver
+      // home_screen.dart) -- ausente confirma que a árvore realmente trocou
+      // de widget, não só ficou visualmente menor.
+      expect(find.byWidgetPredicate((w) => w is SectionSidebar), findsNothing);
+    });
+
+    testWidgets('tocar num item da BottomNavigationBar troca de seção', (tester) async {
+      await pumpHomeScreen(tester, size: narrowSize);
+
+      expect(find.text('Esportes'), findsOneWidget);
+      expect(find.text('Lançamentos'), findsNothing);
+
+      await tester.tap(find.text('Filmes'));
+      await pumpSettled(tester);
+
+      expect(find.text('Lançamentos'), findsOneWidget);
+    });
+
+    testWidgets('menu de overflow (⋮) da AppBar abre Configurações', (tester) async {
+      await pumpHomeScreen(tester, size: narrowSize);
+
+      await tester.tap(find.byIcon(Icons.more_vert));
+      await pumpSettled(tester);
+
+      await tester.tap(find.text('Configurações'));
+      await pumpSettled(tester);
+
+      expect(find.byType(SettingsScreen), findsOneWidget);
     });
   });
 }

@@ -22,6 +22,7 @@ import '../../widgets/dpad_focus_highlight.dart';
 import '../../widgets/network_image_with_fallback.dart';
 import '../../widgets/new_badge.dart';
 import '../../widgets/quality_badge.dart';
+import '../../widgets/section_sidebar.dart';
 import '../../widgets/skeleton_loader.dart';
 import '../../widgets/state_illustration.dart';
 import '../player/player_screen.dart';
@@ -100,34 +101,62 @@ class _HomeScreenBody extends StatefulWidget {
   State<_HomeScreenBody> createState() => _HomeScreenBodyState();
 }
 
-class _HomeScreenBodyState extends State<_HomeScreenBody>
-    with SingleTickerProviderStateMixin {
-  late final TabController _tabController;
+class _HomeScreenBodyState extends State<_HomeScreenBody> {
+  // [TESTE] Substitui o `TabController` antigo — a HomeScreen sempre abre em
+  // Live TV, mesmo índice inicial que o TabController tinha (0). Ver
+  // SectionSidebar, que dá autofoco direto ao item correspondente a esta
+  // seção desde o 1º frame (não depende mais de esperar categorias
+  // chegarem da rede como o hack antigo de `_rootFocusNode`/`nextFocus()`
+  // fazia).
+  HomeSection _selectedSection = HomeSection.liveTv;
 
-  // Nó nomeado (não anônimo) de propósito: dá pra um teste de widget pegar
-  // este `Focus` especificamente (via `find.byWidgetPredicate` + o próprio
-  // `focusNode`) e afirmar `hasFocus == true` sem precisar chamar
-  // `requestFocus()` manualmente — é isso que prova que o autofoco desta
-  // tela funciona sozinho. Mesmo padrão já usado em `_inputFocusNode` da
-  // PlayerScreen.
-  final FocusNode _rootFocusNode = FocusNode(debugLabel: 'home-screen-root');
+  // [TESTE] Isolam a busca DIRECIONAL (seta) do menu lateral e do conteúdo
+  // um do outro -- ao contrário de `FocusTraversalGroup` (que só afeta
+  // travessia por ORDEM/Tab), `FocusScope` genuinamente restringe a busca
+  // por seta aos descendentes de cada um. Necessário porque, sem isso, o
+  // algoritmo padrão do Flutter varre a árvore inteira e pode preferir um
+  // item do menu (mais alinhado verticalmente) a uma categoria mais
+  // próxima horizontalmente dentro do conteúdo -- "pulo" incorreto
+  // confirmado empiricamente rodando os testes deste redesenho (seta
+  // esquerda na coluna 0 do grid aterrissando em "Continuar Assistindo" do
+  // menu em vez da sidebar de categorias). A transição INTENCIONAL entre os
+  // dois escopos é feita à mão por `_enterMenu`/`_enterContent`, disparada
+  // só quando a busca padrão não encontra nenhum alvo dentro do próprio
+  // escopo -- ver `_BoundaryDirectionalFocusAction` mais abaixo.
+  final FocusScopeNode _sectionSidebarScope = FocusScopeNode(debugLabel: 'section_sidebar_scope');
+  final FocusScopeNode _contentScope = FocusScopeNode(debugLabel: 'home_content_scope');
 
-  // Controla o "salto" único de foco do wrapper invisível acima pro
-  // primeiro item de verdade (primeira categoria carregada), assim que ele
-  // existir (ver `_handOffInitialFocusIfReady`). Nunca mais depois da
-  // primeira vez, pra não arrancar o foco de onde o usuário estiver a cada
-  // notifyListeners() do ContentProvider (troca de categoria, etc).
-  bool _didHandOffInitialFocus = false;
+  late final List<FocusNode> _sectionFocusNodes = [
+    for (final section in HomeSection.values) FocusNode(debugLabel: 'menu_${section.name}'),
+  ];
 
-  // Guardado à parte (em vez de `context.read<ContentProvider>()` de novo
-  // em `dispose()`) de propósito: por volta do fim de um teste de widget
-  // (ou de qualquer desmonte de árvore inteira), o Element desta tela pode
-  // já estar desativado quando `dispose()` roda, e uma nova busca de
-  // ancestral nesse momento é insegura ("Looking up a deactivated widget's
-  // ancestor is unsafe" — achado rodando o teste). Guardar a referência
-  // enquanto o contexto ainda está garantidamente ativo (`initState`) evita
-  // essa busca tardia.
-  late final ContentProvider _contentProvider = context.read<ContentProvider>();
+  @override
+  void dispose() {
+    _sectionSidebarScope.dispose();
+    _contentScope.dispose();
+    for (final node in _sectionFocusNodes) {
+      node.dispose();
+    }
+    super.dispose();
+  }
+
+  /// Devolve o foco pro item do menu correspondente à seção ATIVA --
+  /// chamado quando seta esquerda no conteúdo não encontra mais nenhum alvo
+  /// dentro do próprio `_contentScope` (já na borda esquerda).
+  void _enterMenu() => _sectionFocusNodes[_selectedSection.index].requestFocus();
+
+  /// Entra no conteúdo vindo do menu. `FocusScopeNode.requestFocus()` SEM
+  /// argumento só refoca automaticamente o último descendente focado
+  /// (`focusedChild`) -- na primeira vez entrando numa seção (nenhum
+  /// `focusedChild` ainda), ele foca o PRÓPRIO nó do escopo em vez de um
+  /// item de verdade (comportamento documentado do `FocusScopeNode`, não um
+  /// bug), então a busca do primeiro item focável (`findFirstFocus`) precisa
+  /// ser feita à mão nesse caso.
+  void _enterContent() {
+    final target = _contentScope.focusedChild ??
+        ReadingOrderTraversalPolicy().findFirstFocus(_contentScope, ignoreCurrentFocus: true);
+    (target ?? _contentScope).requestFocus();
+  }
 
   // Liga só durante a re-busca de servidores de "Trocar de servidor" (ver
   // `_switchServer`) -- troca o ícone da ação por um spinner pra dar
@@ -135,95 +164,52 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
   // (nem escurecer) o resto da tela com um dialog.
   bool _switchingServer = false;
 
-  // Uma GlobalKey por aba de conteúdo -- dá pro botão de lupa GLOBAL da
-  // AppBar (ver `build` abaixo) abrir/fechar a busca da aba ATUALMENTE
+  // Uma GlobalKey por seção de conteúdo -- dá pro botão de lupa GLOBAL da
+  // AppBar (ver `build` abaixo) abrir/fechar a busca da seção ATUALMENTE
   // visível sem precisar levantar todo o estado de busca (_searching,
   // _searchController etc.) pra cá: ele só invoca `_toggleSearch()` no
-  // `_ContentTabViewState` certo através da key. Mapeado por índice em vez
-  // de por `ContentType` porque é assim que `_tabController.index` (a fonte
-  // de "qual aba está visível agora") já vem.
+  // `_ContentTabViewState` certo através da key. Indexado por
+  // `ContentType`, não por `HomeSection` -- "Continuar Assistindo" não tem
+  // uma (ver `_currentContentTabKey`).
   final List<GlobalKey<_ContentTabViewState>> _contentTabKeys =
       List.generate(ContentType.values.length, (_) => GlobalKey<_ContentTabViewState>());
 
-  /// null na aba "Continuar Assistindo" (índice fora de [ContentType],
-  /// mesma guarda usada em `_ensureCategoriesLoaded`) -- ela não tem busca.
-  GlobalKey<_ContentTabViewState>? get _currentContentTabKey =>
-      _tabController.index < _contentTabKeys.length ? _contentTabKeys[_tabController.index] : null;
+  /// null na seção "Continuar Assistindo" (sem [ContentType], mesma guarda
+  /// usada em `_ensureCategoriesLoaded`) -- ela não tem busca.
+  GlobalKey<_ContentTabViewState>? get _currentContentTabKey {
+    final type = _selectedSection.contentType;
+    return type == null ? null : _contentTabKeys[type.index];
+  }
 
   @override
   void initState() {
     super.initState();
-    // +1: a aba "Continuar Assistindo" não corresponde a nenhum
-    // [ContentType] (não tem categorias/sidebar, ver `_ensureCategoriesLoaded`
-    // e `_ContinueWatchingTab`) — por isso não faz parte de `ContentType.values`.
-    _tabController = TabController(
-      length: ContentType.values.length + 1,
-      vsync: this,
-    );
-    _tabController.addListener(_onTabSettled);
-    // Carrega as categorias da primeira aba e o progresso de "Continuar
+    // Carrega as categorias da seção inicial e o progresso de "Continuar
     // Assistindo" assim que a tela monta.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _ensureCategoriesLoaded(0);
+      _ensureCategoriesLoaded(_selectedSection);
       context.read<ContinueWatchingProvider>().load();
       context.read<FavoritesProvider>().load();
     });
-    // As categorias da primeira aba chegam de forma assíncrona (rede) —
-    // escuta o ContentProvider pra saltar o foco assim que a sidebar/chips
-    // tiverem o primeiro item de verdade pra focar (ver
-    // `_handOffInitialFocusIfReady`).
-    _contentProvider.addListener(_handOffInitialFocusIfReady);
   }
 
-  @override
-  void dispose() {
-    _tabController.removeListener(_onTabSettled);
-    _tabController.dispose();
-    _contentProvider.removeListener(_handOffInitialFocusIfReady);
-    _rootFocusNode.dispose();
-    super.dispose();
+  /// [TESTE] Troca a seção exibida (chamado pelo `SectionSidebar`) --
+  /// substitui o antigo listener de `_tabController`. Categorias são
+  /// carregadas sob demanda na primeira vez que cada seção é selecionada
+  /// (mesma lógica de antes, só sem depender de `TabController.indexIsChanging`
+  /// pra evitar disparo duplicado -- aqui só existe UM ponto de entrada).
+  void _selectSection(HomeSection section) {
+    if (section == _selectedSection) return;
+    setState(() => _selectedSection = section);
+    _ensureCategoriesLoaded(section);
   }
 
-  void _onTabSettled() {
-    // Os botões de busca/atualizar da AppBar (ver `build`) dependem de qual
-    // aba está selecionada agora -- sem este setState aqui, a AppBar (que
-    // não é filha da TabBarView) nunca saberia que precisa se redesenhar
-    // quando o usuário troca de aba.
-    setState(() {});
-    if (!_tabController.indexIsChanging) {
-      _ensureCategoriesLoaded(_tabController.index);
-    }
-  }
-
-  /// Salta o foco, uma única vez, do wrapper invisível (`_rootFocusNode`,
-  /// ver `build` abaixo) pra primeira categoria carregada — sem isso, a
-  /// primeira seta do D-Pad não move o foco pra lugar nenhum: esse wrapper
-  /// fica FORA do `FocusTraversalGroup` da sidebar/chips, e busca
-  /// DIRECIONAL (seta) não "entra" nele sozinha — só travessia por ORDEM
-  /// (`nextFocus`, equivalente ao Tab) consegue atravessar essa fronteira
-  /// (achado empírico rodando o teste que cobre esse cenário: ver "seta
-  /// move o foco pra sidebar de categorias, mesmo sem nenhum foco manual
-  /// antes").
-  void _handOffInitialFocusIfReady() {
-    if (_didHandOffInitialFocus) return;
-    // A aba inicial é sempre Live TV (índice 0, ver `TabController` acima)
-    // -- esta guarda é só defensiva, pra nunca indexar `ContentType.values`
-    // fora dos limites caso o índice inicial mude no futuro.
-    if (_tabController.index >= ContentType.values.length) return;
-    final type = ContentType.values[_tabController.index];
-    if (_contentProvider.categoriesFor(type).isEmpty) return;
-
-    _didHandOffInitialFocus = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _rootFocusNode.nextFocus();
-    });
-  }
-
-  void _ensureCategoriesLoaded(int index) {
-    // Aba "Continuar Assistindo" não tem categorias (ver
-    // `_ContinueWatchingTab`) -- nada a carregar aqui pra ela.
-    if (index >= ContentType.values.length) return;
-    context.read<ContentProvider>().loadCategories(ContentType.values[index]);
+  void _ensureCategoriesLoaded(HomeSection section) {
+    // "Continuar Assistindo" não tem categorias (ver `_ContinueWatchingTab`)
+    // -- nada a carregar aqui pra ela.
+    final type = section.contentType;
+    if (type == null) return;
+    context.read<ContentProvider>().loadCategories(type);
   }
 
   /// Rebusca a lista de servidores
@@ -288,14 +274,14 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
 
   bool get _isCurrentTabFavoritesOnly => _currentContentTabKey?.currentState?._favoritesOnly ?? false;
 
-  /// Botão de atualizar da AppBar: na aba atual, força releitura ignorando
-  /// cache (ver `ContentProvider.refresh`); na aba "Continuar Assistindo"
+  /// Botão de atualizar da AppBar: na seção atual, força releitura ignorando
+  /// cache (ver `ContentProvider.refresh`); na seção "Continuar Assistindo"
   /// (sem `ContentType`, ver `_currentContentTabKey`), recarrega o
   /// progresso salvo em vez disso.
   void _refreshCurrent(BuildContext context) {
-    final index = _tabController.index;
-    if (index < ContentType.values.length) {
-      context.read<ContentProvider>().refresh(ContentType.values[index]);
+    final type = _selectedSection.contentType;
+    if (type != null) {
+      context.read<ContentProvider>().refresh(type);
     } else {
       context.read<ContinueWatchingProvider>().load();
     }
@@ -336,6 +322,16 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
     // sem precisar de nenhum setState manual aqui.
     final connectedServerName = context.watch<ProfilesProvider>().savedProfile?.nomeExibicao;
 
+    // [TESTE] Mesmo corte que `_ContentTabView` já usa (`_sidebarBreakpoint`)
+    // pra decidir sidebar-de-categoria-vs-chips, agora também no nível
+    // raiz: acima dele, menu lateral fixo (SectionSidebar); abaixo,
+    // BottomNavigationBar (o app também roda em Android mobile por toque,
+    // ver CLAUDE.md -- um menu lateral fixo de 220px não cabe bem numa tela
+    // de celular em retrato). `MediaQuery.sizeOf` (não outro `LayoutBuilder`
+    // aninhado) porque essa decisão também afeta a AppBar (menu de
+    // overflow vs. botões diretos), construída fora da árvore do `body`.
+    final isWide = MediaQuery.sizeOf(context).width >= _sidebarBreakpoint;
+
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.escape): () =>
@@ -373,78 +369,192 @@ class _HomeScreenBodyState extends State<_HomeScreenBody>
                 tooltip: 'Atualizar',
                 onPressed: () => _refreshCurrent(context),
               ),
-              IconButton(
-                icon: const Icon(Icons.settings_outlined),
-                tooltip: 'Configurações',
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const SettingsScreen()),
+              // No layout largo, Configurações/Trocar servidor/Sair moram
+              // no grupo inferior do SectionSidebar (ver `body` abaixo) --
+              // no estreito, sem menu lateral pra guardá-los, viram um
+              // menu de overflow aqui na AppBar, reaproveitando os MESMOS
+              // callbacks (nenhuma lógica nova, só outro widget de entrada).
+              if (!isWide)
+                PopupMenuButton<VoidCallback>(
+                  tooltip: 'Mais opções',
+                  onSelected: (action) => action(),
+                  itemBuilder: (context) => [
+                    PopupMenuItem(
+                      value: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                      ),
+                      child: const Text('Configurações'),
+                    ),
+                    PopupMenuItem(
+                      value: () => _switchServer(context),
+                      child: const Text('Trocar servidor'),
+                    ),
+                    PopupMenuItem(
+                      value: () => _confirmExit(context),
+                      child: const Text('Sair'),
+                    ),
+                  ],
                 ),
-              ),
-              IconButton(
-                icon: _switchingServer
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2.4),
-                      )
-                    : const Icon(Icons.swap_horiz),
-                tooltip: 'Trocar de servidor',
-                onPressed: _switchingServer ? null : () => _switchServer(context),
-              ),
             ],
-            bottom: TabBar(
-              controller: _tabController,
-              tabs: const [
-                Tab(icon: Icon(Icons.live_tv), text: 'Live TV'),
-                Tab(icon: Icon(Icons.movie), text: 'Filmes'),
-                Tab(icon: Icon(Icons.video_library), text: 'Séries'),
-                Tab(icon: Icon(Icons.history), text: 'Continuar'),
-              ],
-            ),
           ),
-          body: Focus(
-            // Garante que exista foco de teclado real assim que a tela
-            // carrega — sem isso, o CallbackShortcuts do Escape (acima) fica
-            // "surdo" até o usuário apertar alguma seta pela primeira vez: o
-            // foco padrão de uma rota recém-aberta é o FocusScope da própria
-            // rota, que fica ACIMA do CallbackShortcuts na árvore, e evento
-            // de tecla só sobe (nunca desce) a partir do nó focado.
-            // `skipTraversal` impede que Tab/D-Pad parem neste nó "invisível"
-            // depois que o usuário começa a navegar de verdade.
-            focusNode: _rootFocusNode,
-            autofocus: true,
-            skipTraversal: true,
-            child: TabBarView(
-              controller: _tabController,
-              children: [
-                _ContentTabView(
-                  key: _contentTabKeys[ContentType.live.index],
-                  type: ContentType.live,
-                  searchHintText: 'Buscar canal...',
-                  streamsPanelBuilder: (query, favoritesOnly) =>
-                      _LiveStreamsPanel(searchQuery: query, favoritesOnly: favoritesOnly),
-                ),
-                _ContentTabView(
-                  key: _contentTabKeys[ContentType.vod.index],
-                  type: ContentType.vod,
-                  searchHintText: 'Buscar filme...',
-                  streamsPanelBuilder: (query, favoritesOnly) =>
-                      _VodGrid(searchQuery: query, favoritesOnly: favoritesOnly),
-                ),
-                _ContentTabView(
-                  key: _contentTabKeys[ContentType.series.index],
-                  type: ContentType.series,
-                  searchHintText: 'Buscar série...',
-                  streamsPanelBuilder: (query, favoritesOnly) =>
-                      _SeriesGrid(searchQuery: query, favoritesOnly: favoritesOnly),
-                ),
-                const _ContinueWatchingTab(),
-              ],
-            ),
-          ),
+          body: isWide ? _buildWideBody(context) : _buildNarrowBody(),
         ),
       ),
     );
+  }
+
+  /// Menu lateral fixo (SectionSidebar) + conteúdo lado a lado -- ver
+  /// `_buildContentStack` pro porquê do `IndexedStack`/`ExcludeFocus`, e o
+  /// `Actions`/`FocusScope` duplo pro porquê da travessia de foco entre os
+  /// dois lados ser feita à mão (`_enterContent`/`_enterMenu`).
+  Widget _buildWideBody(BuildContext context) {
+    return Row(
+      children: [
+        // [TESTE] `Actions` sobrepõe SÓ `DirectionalFocusIntent` (não mexe
+        // em Enter/Ativação) -- deixa a busca por seta padrão tentar
+        // primeiro (`FocusNode.focusInDirection`, mesma coisa que o
+        // framework já faz por baixo dos panos) e só chama `_enterContent`
+        // quando ela não encontra NADA dentro do `_sectionSidebarScope`
+        // isolado (ou seja, seta direita já na borda direita do menu).
+        Actions(
+          actions: {
+            DirectionalFocusIntent: _BoundaryDirectionalFocusAction(
+              onBoundary: (direction) {
+                if (direction == TraversalDirection.right) _enterContent();
+              },
+            ),
+          },
+          child: SectionSidebar(
+            selected: _selectedSection,
+            onSelectSection: _selectSection,
+            onOpenSettings: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const SettingsScreen()),
+            ),
+            onSwitchServer: () => _switchServer(context),
+            onExit: () => _confirmExit(context),
+            switchingServer: _switchingServer,
+            focusScopeNode: _sectionSidebarScope,
+            sectionFocusNodes: _sectionFocusNodes,
+          ),
+        ),
+        const VerticalDivider(width: 1),
+        Expanded(
+          // Espelha o `Actions` do menu acima, na direção oposta: seta
+          // esquerda já na borda esquerda do `_contentScope` (nada mais pra
+          // focar ali dentro) devolve o foco pro item ativo do menu.
+          child: Actions(
+            actions: {
+              DirectionalFocusIntent: _BoundaryDirectionalFocusAction(
+                onBoundary: (direction) {
+                  if (direction == TraversalDirection.left) _enterMenu();
+                },
+              ),
+            },
+            child: FocusScope(
+              node: _contentScope,
+              child: _buildContentStack(),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// [TESTE] BottomNavigationBar no lugar do menu lateral -- só os 4 itens
+  /// de conteúdo (Configurações/Trocar servidor/Sair viram overflow na
+  /// AppBar, ver `build`). Sem `FocusScope`/`Actions` de travessia como no
+  /// layout largo: TVs renderizam largura >= `_sidebarBreakpoint` na
+  /// prática, então este layout só ativa em celular (touch-first) -- não há
+  /// D-Pad real pra testar aqui.
+  Widget _buildNarrowBody() {
+    return Column(
+      children: [
+        Expanded(child: _buildContentStack()),
+        BottomNavigationBar(
+          type: BottomNavigationBarType.fixed,
+          currentIndex: _selectedSection.index,
+          onTap: (index) => _selectSection(HomeSection.values[index]),
+          items: [
+            for (final section in HomeSection.values)
+              BottomNavigationBarItem(icon: Icon(section.icon), label: section.label),
+          ],
+        ),
+      ],
+    );
+  }
+
+  /// [TESTE] IndexedStack no lugar da TabBarView antiga. IndexedStack
+  /// mantém os 4 painéis sempre montados (mesma propriedade que a
+  /// TabBarView já tinha, crítica pra preservar scroll/categoria/busca por
+  /// seção e o foco ao voltar do PlayerScreen) -- mas, ao contrário da
+  /// TabBarView (cujo PageView translada páginas offscreen fisicamente pra
+  /// longe), o IndexedStack sobrepõe todos os filhos na MESMA caixa. Sem o
+  /// ExcludeFocus abaixo, o foco poderia "vazar" pra um item de uma seção
+  /// invisível sem nenhum sinal visual na tela.
+  Widget _buildContentStack() {
+    return IndexedStack(
+      index: _selectedSection.index,
+      children: [
+        for (final section in HomeSection.values)
+          ExcludeFocus(
+            excluding: section != _selectedSection,
+            child: _panelFor(section),
+          ),
+      ],
+    );
+  }
+
+  Widget _panelFor(HomeSection section) {
+    switch (section) {
+      case HomeSection.liveTv:
+        return _ContentTabView(
+          key: _contentTabKeys[ContentType.live.index],
+          type: ContentType.live,
+          searchHintText: 'Buscar canal...',
+          streamsPanelBuilder: (query, favoritesOnly) =>
+              _LiveStreamsPanel(searchQuery: query, favoritesOnly: favoritesOnly),
+        );
+      case HomeSection.vod:
+        return _ContentTabView(
+          key: _contentTabKeys[ContentType.vod.index],
+          type: ContentType.vod,
+          searchHintText: 'Buscar filme...',
+          streamsPanelBuilder: (query, favoritesOnly) =>
+              _VodGrid(searchQuery: query, favoritesOnly: favoritesOnly),
+        );
+      case HomeSection.series:
+        return _ContentTabView(
+          key: _contentTabKeys[ContentType.series.index],
+          type: ContentType.series,
+          searchHintText: 'Buscar série...',
+          streamsPanelBuilder: (query, favoritesOnly) =>
+              _SeriesGrid(searchQuery: query, favoritesOnly: favoritesOnly),
+        );
+      case HomeSection.continueWatching:
+        return const _ContinueWatchingTab();
+    }
+  }
+}
+
+/// [TESTE] Sobrepõe o `DirectionalFocusIntent` padrão do Flutter (ligado a
+/// setas de teclado/D-Pad) só pra observar quando a busca NÃO encontra
+/// nenhum alvo dentro do escopo isolado atual (`FocusNode.focusInDirection`
+/// devolve `false`) -- isso é exatamente "já está na borda do escopo nessa
+/// direção". Delega a busca de verdade pro mesmo mecanismo que o Flutter já
+/// usa por baixo dos panos (`FocusNode.focusInDirection`), então direções
+/// que TÊM alvo dentro do escopo continuam funcionando idênticas a antes;
+/// só a direção de borda (configurada via [onBoundary]) ganha um
+/// comportamento extra de "sair do escopo".
+class _BoundaryDirectionalFocusAction extends Action<DirectionalFocusIntent> {
+  _BoundaryDirectionalFocusAction({required this.onBoundary});
+
+  final void Function(TraversalDirection direction) onBoundary;
+
+  @override
+  Object? invoke(DirectionalFocusIntent intent) {
+    final moved = FocusManager.instance.primaryFocus?.focusInDirection(intent.direction) ?? false;
+    if (!moved) onBoundary(intent.direction);
+    return null;
   }
 }
 
