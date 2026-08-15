@@ -81,6 +81,18 @@ class PlayerProvider extends ChangeNotifier {
   /// trabalho redundante ou a causa de uma espera desnecessariamente longa.
   static const _networkTimeoutSecs = '15';
 
+  /// [TESTE] Timeout de segurança em volta de `player.open()`. Relatado em
+  /// TV TCL: o clique em "Assistir" não abre o filme — hipótese é que a
+  /// negociação de decodificação por HARDWARE trava dentro do próprio
+  /// libmpv em certos chips de TV (comum em SoCs Amlogic/MediaTek com
+  /// conteúdo H265/HEVC), sem lançar exceção nem emitir nenhum evento em
+  /// `Player.stream` — a UI fica presa no spinner pra sempre, sem o
+  /// [PlaybackHealthMonitor] nunca ter um evento pra reagir. Maior que
+  /// [_networkTimeoutSecs] de propósito: se o problema for só rede lenta, o
+  /// timeout de rede do próprio mpv deve disparar primeiro e chegar como
+  /// erro normal via `stream.error`, sem passar por aqui.
+  static const _openTimeout = Duration(seconds: 20);
+
   /// [player]/[videoController] existem para injeção em testes — construir
   /// um [Player]/[VideoController] de verdade carrega a lib nativa do
   /// libmpv via FFI, o que não roda em `flutter_test` (sem engine/binários
@@ -131,6 +143,11 @@ class PlayerProvider extends ChangeNotifier {
   late final StreamSubscription<Duration> _durationSubscription;
 
   bool _disposed = false;
+
+  /// [TESTE] Uma tentativa por [PlayerProvider] (cada reprodução tem sua
+  /// própria instância, ver PlayerScreen) — evita loop infinito se até o
+  /// software decoding travar por outro motivo.
+  bool _hwdecFallbackApplied = false;
 
   final StorageService _storageService = StorageService();
 
@@ -200,7 +217,7 @@ class PlayerProvider extends ChangeNotifier {
     _safeNotify();
 
     try {
-      await player.open(Media(url));
+      await _openWithHwdecFallback(url);
     } catch (_) {
       // Se o usuário já saiu da tela (provider disposto) ou já pediu outra
       // mídia enquanto esta abria, ignora o resultado tardio.
@@ -227,6 +244,25 @@ class PlayerProvider extends ChangeNotifier {
     // streams de buffering/playing assumem o estado visual a partir daqui.
     _status = PlayerLoadStatus.buffering;
     _safeNotify();
+  }
+
+  /// [TESTE] Abre [url] com [_openTimeout] de segurança. Se estourar (ver
+  /// motivo em [_openTimeout]) e ainda não tiver sido tentado nesta
+  /// instância, desliga a decodificação por hardware (`hwdec=no`, força
+  /// software puro) e tenta abrir de novo, uma única vez, antes de deixar a
+  /// exceção subir pro catch em [playUrl]. Qualquer exceção que não seja
+  /// timeout (URL inválida, servidor recusou, etc.) sobe direto, sem passar
+  /// por aqui — só timeout indica travamento no `open()` em si.
+  Future<void> _openWithHwdecFallback(String url) async {
+    try {
+      await player.open(Media(url)).timeout(_openTimeout);
+    } on TimeoutException {
+      final native = player.platform;
+      if (_hwdecFallbackApplied || native is! NativePlayer) rethrow;
+      _hwdecFallbackApplied = true;
+      await native.setProperty('hwdec', 'no');
+      await player.open(Media(url)).timeout(_openTimeout);
+    }
   }
 
   /// Reabre a última URL tocada (usado pelo botão "Tentar novamente") —
