@@ -4,16 +4,48 @@ import 'package:provider/provider.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../providers/settings_provider.dart';
+import '../../widgets/dpad_focus_highlight.dart';
 
-/// Tela de Configurações -- por enquanto só o bloqueio por PIN (definir/
-/// alterar/remover). Marcar QUAIS categorias ficam protegidas acontece fora
-/// daqui, direto no cadeado de cada categoria (ver `_CategoriesSidebar`/
-/// `_CategoriesChips` em home_screen.dart) -- só faz sentido protegido
-/// alguma coisa depois de já existir um PIN pra abri-la de novo, então o
-/// fluxo natural é "definir o PIN aqui, depois voltar e trancar categorias
-/// lá".
+/// Tela de Configurações -- por enquanto o bloqueio por PIN (definir/
+/// alterar/remover) e o modo de compatibilidade de vídeo. Marcar QUAIS
+/// categorias ficam protegidas acontece fora daqui, direto no cadeado de
+/// cada categoria (ver `_CategoriesSidebar`/`_CategoriesChips` em
+/// home_screen.dart) -- só faz sentido protegido alguma coisa depois de já
+/// existir um PIN pra abri-la de novo, então o fluxo natural é "definir o
+/// PIN aqui, depois voltar e trancar categorias lá".
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) => const _SettingsScreenBody();
+}
+
+class _SettingsScreenBody extends StatefulWidget {
+  const _SettingsScreenBody();
+
+  @override
+  State<_SettingsScreenBody> createState() => _SettingsScreenBodyState();
+}
+
+/// FocusNodes dedicados (em vez de deixar cada botão criar o seu próprio,
+/// implícito) -- necessário pra [DpadFocusHighlight] e pra dar um alvo de
+/// autofoco único e estável, ver [_pinPrimaryFocusNode].
+class _SettingsScreenBodyState extends State<_SettingsScreenBody> {
+  /// Botão "Definir PIN" (sem PIN ainda) OU "Alterar PIN" (já com PIN) --
+  /// sempre o primeiro controle interativo da tela nos dois casos, por isso
+  /// um FocusNode só, reaproveitado entre as duas variantes (a troca de
+  /// widget por trás não perde o foco, já que é o MESMO FocusNode).
+  final FocusNode _pinPrimaryFocusNode = FocusNode(debugLabel: 'settings-pin-primary');
+  final FocusNode _removePinFocusNode = FocusNode(debugLabel: 'settings-remove-pin');
+  final FocusNode _compatibilityFocusNode = FocusNode(debugLabel: 'settings-video-compatibility');
+
+  @override
+  void dispose() {
+    _pinPrimaryFocusNode.dispose();
+    _removePinFocusNode.dispose();
+    _compatibilityFocusNode.dispose();
+    super.dispose();
+  }
 
   Future<void> _definePin(BuildContext context) async {
     final pin = await showDialog<String>(
@@ -54,9 +86,20 @@ class SettingsScreen extends StatelessWidget {
       },
       child: Scaffold(
         appBar: AppBar(title: const Text('Configurações')),
-        body: Focus(
-          autofocus: true,
-          skipTraversal: true,
+        // Substitui o antigo `Focus(autofocus: true, skipTraversal: true)`
+        // vazio que envolvia o corpo inteiro -- sem nenhum onKeyEvent
+        // próprio, ele só ficava ali roubando o autofoco inicial (por ser
+        // montado antes de qualquer botão) e nunca soltava: busca
+        // DIRECIONAL (seta) não sai sozinha de um nó `skipTraversal`,
+        // exatamente a mesma armadilha já documentada em
+        // `_inputFocusNode` de player_screen.dart, só que lá existe um
+        // `nextFocus()` explícito pra escapar dela -- aqui não existia
+        // nenhum, e o foco simplesmente nunca saía do wrapper (confirmado
+        // rodando um teste de D-Pad: `primaryFocus` idêntico antes e depois
+        // de duas setas pra baixo). Removido -- o autofoco agora vai direto
+        // no primeiro controle real (`_pinPrimaryFocusNode` abaixo), sem
+        // nó intermediário nenhum pra travar.
+        body: FocusTraversalGroup(
           child: Consumer<SettingsProvider>(
             builder: (context, settings, _) {
               return ListView(
@@ -75,25 +118,37 @@ class SettingsScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: AppSpacing.l),
                   if (!settings.hasPin)
-                    ElevatedButton.icon(
-                      autofocus: true,
-                      onPressed: () => _definePin(context),
-                      icon: const Icon(Icons.lock_outline),
-                      label: const Text('Definir PIN'),
+                    DpadFocusHighlight(
+                      focusNode: _pinPrimaryFocusNode,
+                      builder: (context, focusNode, hasFocus) => ElevatedButton.icon(
+                        focusNode: focusNode,
+                        autofocus: true,
+                        onPressed: () => _definePin(context),
+                        icon: const Icon(Icons.lock_outline),
+                        label: const Text('Definir PIN'),
+                      ),
                     )
                   else ...[
-                    OutlinedButton.icon(
-                      autofocus: true,
-                      onPressed: () => _definePin(context),
-                      icon: const Icon(Icons.edit_outlined),
-                      label: const Text('Alterar PIN'),
+                    DpadFocusHighlight(
+                      focusNode: _pinPrimaryFocusNode,
+                      builder: (context, focusNode, hasFocus) => OutlinedButton.icon(
+                        focusNode: focusNode,
+                        autofocus: true,
+                        onPressed: () => _definePin(context),
+                        icon: const Icon(Icons.edit_outlined),
+                        label: const Text('Alterar PIN'),
+                      ),
                     ),
                     const SizedBox(height: AppSpacing.s),
-                    OutlinedButton.icon(
-                      onPressed: () => _removePin(context),
-                      icon: const Icon(Icons.lock_open_outlined),
-                      label: const Text('Remover PIN'),
-                      style: OutlinedButton.styleFrom(foregroundColor: AppTheme.errorColor),
+                    DpadFocusHighlight(
+                      focusNode: _removePinFocusNode,
+                      builder: (context, focusNode, hasFocus) => OutlinedButton.icon(
+                        focusNode: focusNode,
+                        onPressed: () => _removePin(context),
+                        icon: const Icon(Icons.lock_open_outlined),
+                        label: const Text('Remover PIN'),
+                        style: OutlinedButton.styleFrom(foregroundColor: AppTheme.errorColor),
+                      ),
                     ),
                   ],
                   const SizedBox(height: AppSpacing.xl),
@@ -109,11 +164,15 @@ class SettingsScreen extends StatelessWidget {
                     'pesada para o processador.',
                     style: TextStyle(color: Colors.grey.shade400, fontSize: 13),
                   ),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Modo compatibilidade de vídeo'),
-                    value: settings.videoCompatibilityMode,
-                    onChanged: (value) => settings.setVideoCompatibilityMode(value),
+                  DpadFocusHighlight(
+                    focusNode: _compatibilityFocusNode,
+                    builder: (context, focusNode, hasFocus) => SwitchListTile(
+                      focusNode: focusNode,
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Modo compatibilidade de vídeo'),
+                      value: settings.videoCompatibilityMode,
+                      onChanged: (value) => settings.setVideoCompatibilityMode(value),
+                    ),
                   ),
                 ],
               );
