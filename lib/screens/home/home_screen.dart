@@ -274,17 +274,33 @@ class _HomeScreenBodyState extends State<_HomeScreenBody> {
 
   bool get _isCurrentTabFavoritesOnly => _currentContentTabKey?.currentState?._favoritesOnly ?? false;
 
+  /// [TESTE] Liga só durante `_refreshCurrent` -- sem isso, o botão
+  /// "Atualizar" não dava NENHUM feedback visual (sem spinner, sem
+  /// confirmação): quando o painel não tinha nada novo pra trazer, parecia
+  /// que o toque não tinha feito efeito nenhum, mesmo a releitura de
+  /// verdade tendo acontecido (relatado pelo usuário testando). Mesmo
+  /// padrão já usado por `_switchingServer`.
+  bool _refreshing = false;
+
   /// Botão de atualizar da AppBar: na seção atual, força releitura ignorando
   /// cache (ver `ContentProvider.refresh`); na seção "Continuar Assistindo"
   /// (sem `ContentType`, ver `_currentContentTabKey`), recarrega o
   /// progresso salvo em vez disso.
-  void _refreshCurrent(BuildContext context) {
+  Future<void> _refreshCurrent(BuildContext context) async {
+    setState(() => _refreshing = true);
+
     final type = _selectedSection.contentType;
     if (type != null) {
-      context.read<ContentProvider>().refresh(type);
+      await context.read<ContentProvider>().refresh(type);
     } else {
-      context.read<ContinueWatchingProvider>().load();
+      await context.read<ContinueWatchingProvider>().load();
     }
+
+    if (!context.mounted) return;
+    setState(() => _refreshing = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Atualizado.'), duration: Duration(seconds: 2)),
+    );
   }
 
   /// HomeScreen é a única rota na pilha (splash/login chegam aqui via
@@ -365,9 +381,15 @@ class _HomeScreenBodyState extends State<_HomeScreenBody> {
                   onPressed: _toggleCurrentFavoritesOnly,
                 ),
               IconButton(
-                icon: const Icon(Icons.refresh),
+                icon: _refreshing
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2.4),
+                      )
+                    : const Icon(Icons.refresh),
                 tooltip: 'Atualizar',
-                onPressed: () => _refreshCurrent(context),
+                onPressed: _refreshing ? null : () => _refreshCurrent(context),
               ),
               // No layout largo, Configurações/Trocar servidor/Sair moram
               // no grupo inferior do SectionSidebar (ver `body` abaixo) --
