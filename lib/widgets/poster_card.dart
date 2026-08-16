@@ -41,6 +41,12 @@ class PosterCard extends StatelessWidget {
   /// VOD/Séries/Continuar Assistindo.
   final Widget? subtitle;
 
+  /// [TESTE] `null` = sem botão de remover nenhum -- usado só por
+  /// ContinueWatchingScreen (canto superior direito, mesmo canto do selo de
+  /// nota, mas os dois nunca coexistem: "Continuar Assistindo" sempre passa
+  /// `rating: 0`).
+  final VoidCallback? onRemove;
+
   const PosterCard({
     super.key,
     required this.title,
@@ -55,6 +61,7 @@ class PosterCard extends StatelessWidget {
     this.isFavorite,
     this.onToggleFavorite,
     this.subtitle,
+    this.onRemove,
   });
 
   @override
@@ -82,6 +89,12 @@ class PosterCard extends StatelessWidget {
                     top: 6,
                     right: 6,
                     child: RatingBadge(rating: rating),
+                  ),
+                if (onRemove != null)
+                  Positioned(
+                    top: 6,
+                    right: 6,
+                    child: PosterRemoveButton(onPressed: onRemove!),
                   ),
                 if (topLeftBadge != null)
                   Positioned(
@@ -342,6 +355,33 @@ class PosterFavoriteToggle extends StatelessWidget {
           size: 14,
           color: isFavorite ? AppTheme.primaryColor : Colors.white,
         ),
+      ),
+    );
+  }
+}
+
+/// [TESTE] "X" de remover sobreposto no canto superior direito de um
+/// pôster (ver [PosterCard.onRemove]) -- usado só por
+/// ContinueWatchingScreen, pra tirar um item específico de "Continuar
+/// Assistindo" sem precisar de uma tela/modo de seleção à parte. Mesmo
+/// padrão de `GestureDetector` PRÓPRIO de [PosterFavoriteToggle] (ver doc
+/// lá do porquê).
+class PosterRemoveButton extends StatelessWidget {
+  final VoidCallback onPressed;
+
+  const PosterRemoveButton({super.key, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onPressed,
+      child: Container(
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          color: Colors.black.withAlpha(180),
+          shape: BoxShape.circle,
+        ),
+        child: const Icon(Icons.close, size: 14, color: Colors.white),
       ),
     );
   }

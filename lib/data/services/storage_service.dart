@@ -143,6 +143,12 @@ class StorageService {
     await _writeProgress(updated);
   }
 
+  /// [TESTE] Apaga TODO o progresso salvo de uma vez -- usado pelo "Limpar
+  /// tudo" da tela "Continuar Assistindo".
+  Future<void> clearAllProgress() async {
+    await _writeProgress(const []);
+  }
+
   Future<void> _writeProgress(List<WatchProgress> items) async {
     final prefs = await SharedPreferences.getInstance();
     final encoded = json.encode(items.map((p) => p.toJson()).toList());

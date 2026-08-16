@@ -13,7 +13,9 @@ import '../player/player_screen.dart';
 
 /// [TESTE] Tela "Continuar Assistindo" -- grid liso do progresso salvo
 /// (sem categorias, ver [ContinueWatchingProvider]), mesmo padrão visual
-/// de VOD/Séries ([PosterCard] + [AppCardSizes.posterGridDelegate]).
+/// de VOD/Séries ([PosterCard] + [AppCardSizes.posterGridDelegate]). Cada
+/// card tem um "X" pra remover só aquele item; a AppBar tem "Limpar tudo"
+/// pra esvaziar a lista inteira de uma vez.
 class ContinueWatchingScreen extends StatelessWidget {
   const ContinueWatchingScreen({super.key});
 
@@ -36,6 +38,38 @@ class ContinueWatchingScreen extends StatelessWidget {
         .then((_) => continueWatching.load());
   }
 
+  /// Remoção de um item só -- direto, sem confirmação (mesmo padrão do
+  /// coração de favoritar em outras telas: uma ação reversível o
+  /// suficiente -- assistir de novo já recria a entrada -- não precisa de
+  /// diálogo).
+  void _removeOne(BuildContext context, WatchProgress progress) {
+    context.read<ContinueWatchingProvider>().remove(progress.contentId);
+  }
+
+  /// "Limpar tudo" SEMPRE confirma antes -- ao contrário da remoção
+  /// individual, apaga a lista inteira de uma vez só, mesmo padrão de
+  /// confirmação já usado pra outras ações destrutivas do app (sair,
+  /// remover PIN).
+  Future<void> _clearAll(BuildContext context) async {
+    final continueWatching = context.read<ContinueWatchingProvider>();
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Limpar "Continuar Assistindo"?'),
+        content: const Text('Remove todo o progresso salvo. Você pode continuar assistindo qualquer um de novo do início quando quiser.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text('Cancelar')),
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(true), child: const Text('Limpar tudo')),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await continueWatching.clearAll();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return CallbackShortcuts(
@@ -43,7 +77,18 @@ class ContinueWatchingScreen extends StatelessWidget {
         const SingleActivator(LogicalKeyboardKey.escape): () => Navigator.maybePop(context),
       },
       child: Scaffold(
-        appBar: AppBar(title: const Text('Continuar Assistindo')),
+        appBar: AppBar(
+          title: const Text('Continuar Assistindo'),
+          actions: [
+            Consumer<ContinueWatchingProvider>(
+              builder: (context, provider, _) => IconButton(
+                icon: const Icon(Icons.delete_sweep_outlined),
+                tooltip: 'Limpar tudo',
+                onPressed: provider.items.isEmpty ? null : () => _clearAll(context),
+              ),
+            ),
+          ],
+        ),
         body: Consumer<ContinueWatchingProvider>(
           builder: (context, provider, _) {
             final items = provider.items;
@@ -73,6 +118,7 @@ class ContinueWatchingScreen extends StatelessWidget {
                     rating: 0,
                     progressFraction: progress.fraction,
                     onTap: () => _play(context, progress),
+                    onRemove: () => _removeOne(context, progress),
                   ),
                 );
               },
