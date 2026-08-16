@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
 
+/// [TESTE] Paleta azul escura (inspirada nas screenshots do Duplecast que o
+/// usuário mandou) -- substitui a paleta "Cinema" (fundo quase preto +
+/// laranja) anterior. Só as 3 cores base mudam aqui; toda a estrutura de
+/// [AppSpacing]/[AppCardSizes] abaixo é independente de cor.
 class AppTheme {
   AppTheme._();
 
-  static const Color primaryColor = Color(0xFFD85A30);
-  static const Color backgroundColor = Color(0xFF0D0D0D);
-  static const Color surfaceColor = Color(0xFF1C1C1C);
+  static const Color primaryColor = Color(0xFF2F7FD1);
+  static const Color backgroundColor = Color(0xFF0E2A47);
+  static const Color surfaceColor = Color(0xFF17395C);
   static const Color errorColor = Color(0xFFCF6679);
 
   /// Título/legenda de qualquer card de conteúdo (Live TV, VOD, Séries,
@@ -37,14 +41,6 @@ class AppTheme {
     fontWeight: FontWeight.bold,
     shadows: [Shadow(color: Colors.black87, blurRadius: 8, offset: Offset(0, 1))],
   );
-
-  /// [TESTE] Fundo persistente da seção ATIVA no menu lateral (ver
-  /// SectionSidebar) — independente de foco, ao contrário do glow
-  /// transitório de [DpadFocusHighlight] (que usa `primaryColor.withAlpha(40)`
-  /// e só aparece com o D-Pad em cima do item). Alpha propositalmente mais
-  /// baixo que aquele (31 vs 40) pra não competir visualmente quando os
-  /// dois coincidem no mesmo item (seção ativa E focada ao mesmo tempo).
-  static const Color sidebarActiveBackground = Color(0x1FD85A30);
 
   static ThemeData get darkTheme {
     final base = ThemeData.dark(useMaterial3: true);

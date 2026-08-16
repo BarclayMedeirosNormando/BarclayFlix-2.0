@@ -37,14 +37,45 @@ class TabState<TStream> {
 /// Nenhum widget deve chamar a API diretamente — sempre por aqui, que já
 /// trata [XtreamApiException] e expõe mensagens de erro amigáveis.
 class ContentProvider extends ChangeNotifier {
-  final XtreamApiService _apiService;
+  // [TESTE] Nullable + `updateApiService` (em vez de `final ... required`) --
+  // este provider agora vive na raiz do app (ver main.dart), não mais só
+  // dentro da árvore local da HomeScreen, pra ficar acessível às telas
+  // novas do redesenho (CategoryListScreen/LiveChannelsScreen/
+  // ContentGridScreen), todas rotas IRMÃS entre si (Navigator.push não
+  // aninha uma rota dentro da outra -- ver comentário histórico em
+  // vod_details_screen_dpad_test.dart sobre esse mesmo problema com
+  // ContinueWatchingProvider). Na raiz do app, porém, `apiService` só
+  // existe DEPOIS do login -- por isso nullable aqui, atualizado via
+  // `ChangeNotifierProxyProvider<AuthProvider, ContentProvider>` assim que
+  // `AuthProvider.apiService` deixa de ser null.
+  XtreamApiService? _apiService;
 
   // Nomeado `apiService` (não `_apiService`) de propósito: um parâmetro
   // nomeado privado não pode ser referenciado por quem instancia a classe
   // fora deste arquivo, então o initializing formal `this._apiService` não
   // se aplica aqui.
   // ignore: prefer_initializing_formals
-  ContentProvider({required XtreamApiService apiService}) : _apiService = apiService;
+  ContentProvider({XtreamApiService? apiService}) : _apiService = apiService;
+
+  /// Troca o [XtreamApiService] usado por todas as chamadas subsequentes --
+  /// chamado pelo `ChangeNotifierProxyProvider` em main.dart assim que
+  /// `AuthProvider.apiService` fica disponível (login) ou muda (trocar de
+  /// servidor). Não dispara `notifyListeners()`: só troca a referência pra
+  /// próxima chamada de rede usar, sem invalidar categorias/streams já
+  /// carregados (trocar de servidor já leva pra uma ServerSelectionScreen
+  /// nova, que por sua vez recria a HomeScreen/ContentProvider do zero).
+  void updateApiService(XtreamApiService apiService) {
+    _apiService = apiService;
+  }
+
+  /// Asserção de não-nulo no ponto de uso -- seguro porque nenhuma tela que
+  /// chega a USAR este provider (tudo a partir da HomeScreen) é alcançável
+  /// antes do login (ver checagem `apiService == null` em
+  /// home_screen.dart), quando `_apiService` já foi atualizado.
+  XtreamApiService get _api {
+    assert(_apiService != null, 'ContentProvider usado antes de updateApiService (antes do login)');
+    return _apiService!;
+  }
 
   /// Id sintético da categoria "Todos" — nunca vem da API. Mesma ideia nas
   /// 3 abas de conteúdo (Live TV, VOD, Séries), cada uma com sua PRÓPRIA
@@ -102,10 +133,10 @@ class ContentProvider extends ChangeNotifier {
   /// forçar).
   Future<void> loadCategories(ContentType type) {
     return switch (type) {
-      ContentType.live => _loadCategoriesAndDefaultToAll(live, _apiService.getLiveCategories, _fetchLiveStreams),
-      ContentType.vod => _loadCategoriesAndDefaultToAll(vod, _apiService.getVodCategories, _fetchVodStreams),
+      ContentType.live => _loadCategoriesAndDefaultToAll(live, _api.getLiveCategories, _fetchLiveStreams),
+      ContentType.vod => _loadCategoriesAndDefaultToAll(vod, _api.getVodCategories, _fetchVodStreams),
       ContentType.series =>
-        _loadCategoriesAndDefaultToAll(series, _apiService.getSeriesCategories, _fetchSeriesStreams),
+        _loadCategoriesAndDefaultToAll(series, _api.getSeriesCategories, _fetchSeriesStreams),
     };
   }
 
@@ -129,13 +160,13 @@ class ContentProvider extends ChangeNotifier {
   String? _resolveCategoryId(String categoryId) => categoryId == allCategoriesId ? null : categoryId;
 
   Future<List<LiveStream>> _fetchLiveStreams(String categoryId) =>
-      _apiService.getLiveStreams(categoryId: _resolveCategoryId(categoryId));
+      _api.getLiveStreams(categoryId: _resolveCategoryId(categoryId));
 
   Future<List<VodStream>> _fetchVodStreams(String categoryId) =>
-      _apiService.getVodStreams(categoryId: _resolveCategoryId(categoryId));
+      _api.getVodStreams(categoryId: _resolveCategoryId(categoryId));
 
   Future<List<Series>> _fetchSeriesStreams(String categoryId) =>
-      _apiService.getSeriesList(categoryId: _resolveCategoryId(categoryId));
+      _api.getSeriesList(categoryId: _resolveCategoryId(categoryId));
 
   /// Seleciona [categoryId] na aba [type] e carrega os streams dessa
   /// categoria (usando cache em memória quando disponível).
@@ -155,17 +186,17 @@ class ContentProvider extends ChangeNotifier {
     return switch (type) {
       ContentType.live => _refresh(
           live,
-          () => _loadCategories(live, _apiService.getLiveCategories, transform: _withAllCategory),
+          () => _loadCategories(live, _api.getLiveCategories, transform: _withAllCategory),
           _fetchLiveStreams,
         ),
       ContentType.vod => _refresh(
           vod,
-          () => _loadCategories(vod, _apiService.getVodCategories, transform: _withAllCategory),
+          () => _loadCategories(vod, _api.getVodCategories, transform: _withAllCategory),
           _fetchVodStreams,
         ),
       ContentType.series => _refresh(
           series,
-          () => _loadCategories(series, _apiService.getSeriesCategories, transform: _withAllCategory),
+          () => _loadCategories(series, _api.getSeriesCategories, transform: _withAllCategory),
           _fetchSeriesStreams,
         ),
     };

@@ -8,6 +8,9 @@ import 'package:window_manager/window_manager.dart';
 
 import 'core/theme/app_theme.dart';
 import 'providers/auth_provider.dart';
+import 'providers/content_provider.dart';
+import 'providers/continue_watching_provider.dart';
+import 'providers/favorites_provider.dart';
 import 'providers/profiles_provider.dart';
 import 'providers/series_details_provider.dart';
 import 'providers/settings_provider.dart';
@@ -55,6 +58,28 @@ class IptvApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => SeriesDetailsProvider()),
         ChangeNotifierProvider(create: (_) => VodDetailsProvider()),
         ChangeNotifierProvider(create: (_) => SettingsProvider()..load()),
+        // [TESTE] Na raiz do app (junto de SettingsProvider), não mais só
+        // dentro da árvore local da HomeScreen -- ver comentário em
+        // ContentProvider.updateApiService pro porquê (redesenho do hub:
+        // toda tela hoje é uma rota IRMÃ de qualquer outra, não descendente,
+        // então um provider só acessível "dentro" de uma tela específica
+        // fica inacessível pras que são empurradas por cima dela).
+        ChangeNotifierProvider(create: (_) => ContinueWatchingProvider()..load()),
+        ChangeNotifierProvider(create: (_) => FavoritesProvider()..load()),
+        // ContentProvider precisa do apiService (só existe depois do
+        // login) -- ChangeNotifierProxyProvider recria a MESMA instância
+        // (nunca perde categorias/streams já carregados) e só chama
+        // updateApiService quando AuthProvider notifica uma mudança real
+        // (login bem-sucedido, ou troca de servidor).
+        ChangeNotifierProxyProvider<AuthProvider, ContentProvider>(
+          create: (_) => ContentProvider(),
+          update: (_, auth, previous) {
+            final contentProvider = previous ?? ContentProvider();
+            final apiService = auth.apiService;
+            if (apiService != null) contentProvider.updateApiService(apiService);
+            return contentProvider;
+          },
+        ),
       ],
       child: MaterialApp(
         title: 'BarclayFlix 2.0',
