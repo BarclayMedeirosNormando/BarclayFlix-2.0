@@ -47,6 +47,15 @@ class PosterCard extends StatelessWidget {
   /// `rating: 0`).
   final VoidCallback? onRemove;
 
+  /// [TESTE] `true` só no primeiro card de cada grid (`index == 0`, ver
+  /// ContentGridScreen/ContinueWatchingScreen) -- sem isso NENHUM grid de
+  /// pôster tem autofoco nenhum ao abrir: Escape/D-Pad não alcançam nada
+  /// até o usuário tocar em algo primeiro (mesma classe de bug já corrigida
+  /// em settings_screen.dart/category_list_screen.dart, encontrada aqui
+  /// tarde porque não existia teste de D-Pad cobrindo o grid de VOD/Séries
+  /// no redesenho).
+  final bool autofocus;
+
   const PosterCard({
     super.key,
     required this.title,
@@ -62,12 +71,14 @@ class PosterCard extends StatelessWidget {
     this.onToggleFavorite,
     this.subtitle,
     this.onRemove,
+    this.autofocus = false,
   });
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
       focusNode: focusNode,
+      autofocus: autofocus,
       onTap: onTap,
       borderRadius: BorderRadius.circular(8),
       child: Column(

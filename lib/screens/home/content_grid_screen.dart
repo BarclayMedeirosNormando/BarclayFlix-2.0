@@ -196,6 +196,7 @@ class _ContentGridScreenState extends State<ContentGridScreen> {
                       key: ValueKey('vod_stream_${movie.streamId}'),
                       builder: (context, focusNode, hasFocus) => PosterCard(
                         focusNode: focusNode,
+                        autofocus: index == 0,
                         title: movie.name,
                         imageUrl: movie.streamIcon,
                         fallbackIcon: Icons.movie,
@@ -283,6 +284,7 @@ class _ContentGridScreenState extends State<ContentGridScreen> {
                       key: ValueKey('series_${show.seriesId}'),
                       builder: (context, focusNode, hasFocus) => PosterCard(
                         focusNode: focusNode,
+                        autofocus: index == 0,
                         title: show.name,
                         imageUrl: show.cover,
                         fallbackIcon: Icons.video_library,
