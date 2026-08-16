@@ -7,13 +7,18 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:iptv_app/data/models/watch_progress.dart';
 import 'package:iptv_app/data/models/xtream_models.dart';
+import 'package:iptv_app/data/services/storage_service.dart';
 import 'package:iptv_app/data/services/xtream_api_service.dart';
 import 'package:iptv_app/providers/auth_provider.dart';
+import 'package:iptv_app/providers/continue_watching_provider.dart';
+import 'package:iptv_app/providers/favorites_provider.dart';
 import 'package:iptv_app/providers/series_details_provider.dart';
 import 'package:iptv_app/screens/series_details/series_details_screen.dart';
-import 'package:iptv_app/widgets/skeleton_loader.dart';
+import 'package:iptv_app/screens/series_details/series_seasons_screen.dart';
 
 const _testDns = 'http://servidor-teste.com:8080';
 const _testUser = 'cliente_teste';
@@ -32,8 +37,9 @@ const _testSeries = Series(
   categoryId: '20',
 );
 
-/// Dataset fixo: temporada "1" com 2 episódios, temporada "2" com 1
-/// episódio, temporada "3" sem nenhum episódio (para o estado vazio).
+/// Dataset fixo: temporada "1" com 2 episódios (id 101/102), temporada "2"
+/// com 1 episódio (id 201) -- o episódio "alvo" default (sem progresso
+/// salvo) é sempre T1E1 ("Piloto", id 101), o de menor temporada/número.
 Future<http.Response> _seriesInfoHandler(http.Request request) async {
   if (request.url.queryParameters['action'] != 'get_series_info') {
     return http.Response('Not Found', 404);
@@ -66,7 +72,6 @@ Future<http.Response> _seriesInfoHandler(http.Request request) async {
       '2': [
         {'id': '201', 'episode_num': 1, 'title': 'Retorno', 'container_extension': 'mp4', 'season': 2, 'info': {}},
       ],
-      '3': [],
     },
   });
 }
@@ -92,10 +97,18 @@ http.Response _json(Object body) => http.Response(jsonEncode(body), 200);
 Future<void> pumpSeriesDetailsScreen(
   WidgetTester tester, {
   Future<http.Response> Function(http.Request)? handler,
+  ContinueWatchingProvider? continueWatchingProvider,
 }) async {
   tester.view.physicalSize = const Size(900, 900);
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
+
+  // Só reseta o mock quando NINGUÉM já preparou um ContinueWatchingProvider
+  // de propósito (ver o teste de "Continuar") -- chamar de novo aqui
+  // apagaria o progresso salvo por quem chamou antes desta função.
+  if (continueWatchingProvider == null) {
+    SharedPreferences.setMockInitialValues({});
+  }
 
   final apiService = XtreamApiService(
     dns: _testDns,
@@ -109,34 +122,26 @@ Future<void> pumpSeriesDetailsScreen(
       providers: [
         ChangeNotifierProvider<AuthProvider>(create: (_) => AuthProvider(apiService: apiService)),
         ChangeNotifierProvider<SeriesDetailsProvider>(create: (_) => SeriesDetailsProvider()),
+        ChangeNotifierProvider<ContinueWatchingProvider>.value(
+          value: continueWatchingProvider ?? ContinueWatchingProvider(storageService: StorageService()),
+        ),
+        ChangeNotifierProvider<FavoritesProvider>(create: (_) => FavoritesProvider(storageService: StorageService())),
       ],
       child: const MaterialApp(home: SeriesDetailsScreen(series: _testSeries)),
     ),
   );
 }
 
-/// Mesmo padrão dos outros testes de D-Pad do projeto (ver
-/// home_screen_dpad_test.dart): [Focus.of] busca o FocusNode do ancestral
-/// mais próximo, então os finders apontam para algo DENTRO do widget
-/// interativo real.
+/// Mesmo padrão dos outros testes de D-Pad do projeto: [Focus.of] busca o
+/// FocusNode do ancestral mais próximo, então os finders apontam para algo
+/// DENTRO do widget interativo real.
 bool isFocused(WidgetTester tester, Finder finder) {
   return Focus.of(tester.element(finder)).hasFocus;
 }
 
-void focusItem(WidgetTester tester, Finder finder) {
-  Focus.of(tester.element(finder)).requestFocus();
-}
-
 /// Confirma que ALGUM nó de foco já está ativo assim que a tela abre, SEM
-/// nenhuma chamada manual de `requestFocus()` (nem `focusItem` acima) —
-/// essa é a condição real que faz o Escape/D-Pad funcionarem desde o
-/// primeiro frame (ver `Focus(autofocus: true)` em
-/// series_details_screen.dart). Localiza o `Focus` raiz da tela pelo
-/// `debugLabel` do seu `FocusNode` (não por `autofocus`/`skipTraversal`: o
-/// próprio `Navigator` do Flutter já cria um `Focus` interno com essa
-/// MESMA combinação de propriedades para cada rota — achado rodando este
-/// teste, que por isso não pode distinguir "nosso" nó do nó interno do
-/// framework só por elas).
+/// nenhuma chamada manual de `requestFocus()` — essa é a condição real que
+/// faz o Escape/D-Pad funcionarem desde o primeiro frame.
 bool _rootHasAutofocus(WidgetTester tester) {
   final finder = find.byWidgetPredicate((w) => w is Focus && w.focusNode?.debugLabel == 'series-details-screen-root');
   final focusNode = tester.widget<Focus>(finder).focusNode;
@@ -149,43 +154,24 @@ void main() {
       await pumpSeriesDetailsScreen(tester);
       await tester.pump();
 
-      // Nenhum focusItem()/requestFocus() antes desta linha — é exatamente
-      // essa ausência que reproduziria o bug relatado em dispositivo
-      // físico (D-Pad sem efeito nenhum): sem autofoco, nada na árvore
-      // teria foco de teclado pra receber a primeira seta ou o Escape.
       expect(_rootHasAutofocus(tester), isTrue);
     });
 
-    testWidgets(
-      'o seletor de temporada já fica focado sozinho, e a seta move pra próxima — tudo sem foco manual',
-      (tester) async {
-        await pumpSeriesDetailsScreen(tester);
-        await tester.pumpAndSettle();
+    testWidgets('o botão "Assistir T1E1" já fica focado sozinho assim que os episódios carregam', (tester) async {
+      await pumpSeriesDetailsScreen(tester);
+      await tester.pumpAndSettle();
 
-        // O salto automático do wrapper invisível pro seletor de
-        // temporada já aconteceu sozinho (ver
-        // `_handOffInitialFocusIfReady` em series_details_screen.dart) —
-        // sem ele, nenhuma seta moveria o foco pra lugar nenhum a partir
-        // daqui (achado empírico: busca DIRECIONAL, ao contrário de
-        // `nextFocus`/Tab, não atravessa a fronteira de um nó
-        // `skipTraversal` sozinha).
-        expect(isFocused(tester, find.text('Temporada 1')), isTrue);
-
-        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
-        await tester.pump();
-
-        expect(isFocused(tester, find.text('Temporada 2')), isTrue);
-      },
-    );
+      // O salto automático do wrapper invisível pro botão de assistir já
+      // aconteceu sozinho (ver `_handOffInitialFocusIfReady`) -- sem ele,
+      // nenhuma seta moveria o foco pra lugar nenhum a partir daqui.
+      expect(isFocused(tester, find.text('Assistir T1E1')), isTrue);
+    });
   });
 
   group('Header imediato', () {
     testWidgets(
       'mostra dados do Series recebido antes da rede responder, depois troca pelos dados carregados',
       (tester) async {
-        // MockClient resolve rápido demais (mesmo turno de evento) para
-        // observar o estado "ainda carregando" com um handler sem atraso —
-        // este completer segura a resposta até o teste liberar de propósito.
         final completer = Completer<void>();
         Future<http.Response> delayedHandler(http.Request request) async {
           await completer.future;
@@ -195,105 +181,66 @@ void main() {
         await pumpSeriesDetailsScreen(tester, handler: delayedHandler);
         await tester.pump();
 
-        // Duas ocorrências esperadas: título do AppBar + nome no header.
         expect(find.text('Série Teste'), findsNWidgets(2));
         expect(find.text('Sinopse inicial (já vinda da HomeScreen)'), findsOneWidget);
-        expect(find.text('Temporada 1'), findsNothing);
-        // Skeleton loading no lugar do spinner genérico: mesma silhueta do
-        // seletor de temporada + lista de episódios reais (ver Bloco 5).
-        expect(find.byType(CircularProgressIndicator), findsNothing);
-        expect(find.byType(SkeletonChip), findsWidgets);
-        expect(find.byType(SkeletonListRow), findsWidgets);
+        // Sem episódios ainda carregados, o botão mostra "Assistir" genérico
+        // (sem T{s}E{e}, ver SeriesDetailsScreen._resolveTarget == null) e
+        // fica em estado de loading.
+        expect(find.text('Assistir'), findsOneWidget);
 
         completer.complete();
         await tester.pumpAndSettle();
 
         expect(find.text('Sinopse detalhada vinda da rede'), findsOneWidget);
         expect(find.text('Sinopse inicial (já vinda da HomeScreen)'), findsNothing);
+        expect(find.text('Assistir T1E1'), findsOneWidget);
       },
     );
   });
 
-  group('Seletor de temporada', () {
-    testWidgets('navegável lateralmente e troca a lista de episódios ao ativar', (tester) async {
+  group('Ação principal (Assistir/Continuar)', () {
+    testWidgets('sem progresso salvo, mostra "Assistir T1E1" (primeiro episódio da série)', (tester) async {
       await pumpSeriesDetailsScreen(tester);
       await tester.pumpAndSettle();
 
-      expect(find.text('Piloto'), findsOneWidget);
-      expect(find.text('Retorno'), findsNothing);
-
-      focusItem(tester, find.text('Temporada 1'));
-      await tester.pump();
-      expect(isFocused(tester, find.text('Temporada 1')), isTrue);
-
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
-      await tester.pump();
-      expect(isFocused(tester, find.text('Temporada 2')), isTrue);
-      expect(isFocused(tester, find.text('Temporada 1')), isFalse);
-
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-      await tester.pumpAndSettle();
-
-      expect(find.text('Retorno'), findsOneWidget);
-      expect(find.text('Piloto'), findsNothing);
+      expect(find.text('Assistir T1E1'), findsOneWidget);
+      expect(find.text('Continuar T1E1'), findsNothing);
     });
 
-    testWidgets('temporada sem episódios mostra estado vazio', (tester) async {
-      await pumpSeriesDetailsScreen(tester);
+    testWidgets('com progresso salvo num episódio, mostra "Continuar" pra esse episódio', (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final storageService = StorageService();
+      await storageService.saveProgress(WatchProgress(
+        contentId: '102',
+        title: 'Segundo Episódio',
+        imageUrl: '',
+        positionSeconds: 120,
+        durationSeconds: 1200,
+        type: WatchProgressType.episode,
+        playbackUrl: 'http://exemplo.com/102.mp4',
+        lastWatchedAt: DateTime.now(),
+      ));
+      final continueWatching = ContinueWatchingProvider(storageService: storageService);
+      await continueWatching.load();
+
+      await pumpSeriesDetailsScreen(tester, continueWatchingProvider: continueWatching);
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Temporada 3'));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Nenhum episódio listado nesta temporada.'), findsOneWidget);
+      expect(find.text('Continuar T1E2'), findsOneWidget);
+      expect(find.text('Assistir T1E1'), findsNothing);
     });
   });
 
-  group('Lista de episódios', () {
-    testWidgets('seta para baixo move o foco sequencialmente entre os episódios', (tester) async {
+  group('Ícone de Temporadas', () {
+    testWidgets('abre SeriesSeasonsScreen', (tester) async {
       await pumpSeriesDetailsScreen(tester);
       await tester.pumpAndSettle();
 
-      focusItem(tester, find.text('Piloto'));
-      await tester.pump();
-      expect(isFocused(tester, find.text('Piloto')), isTrue);
+      await tester.tap(find.byTooltip('Temporadas'));
+      await tester.pumpAndSettle();
 
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
-      await tester.pump();
-      expect(isFocused(tester, find.text('Segundo Episódio')), isTrue);
-      expect(isFocused(tester, find.text('Piloto')), isFalse);
+      expect(find.byType(SeriesSeasonsScreen), findsOneWidget);
     });
-
-    testWidgets(
-      'seta esquerda/direita em qualquer episódio devolve o foco para a temporada selecionada',
-      (tester) async {
-        await pumpSeriesDetailsScreen(tester);
-        await tester.pumpAndSettle();
-
-        focusItem(tester, find.text('Segundo Episódio'));
-        await tester.pump();
-        expect(isFocused(tester, find.text('Segundo Episódio')), isTrue);
-
-        await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
-        await tester.pump();
-
-        expect(isFocused(tester, find.text('Segundo Episódio')), isFalse);
-        expect(
-          isFocused(tester, find.text('Temporada 1')),
-          isTrue,
-          reason: 'lista de episódios é uma coluna única — toda seta lateral é uma "borda"',
-        );
-
-        // A mesma redireção vale para a seta direita.
-        focusItem(tester, find.text('Piloto'));
-        await tester.pump();
-
-        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
-        await tester.pump();
-
-        expect(isFocused(tester, find.text('Temporada 1')), isTrue);
-      },
-    );
   });
 
   group('Erro e retry', () {
@@ -302,13 +249,12 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Tentar novamente'), findsOneWidget);
-      expect(find.text('Temporada 1'), findsNothing);
+      expect(find.text('Assistir T1E1'), findsNothing);
 
       await tester.tap(find.text('Tentar novamente'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Temporada 1'), findsOneWidget);
-      expect(find.text('Piloto'), findsOneWidget);
+      expect(find.text('Assistir T1E1'), findsOneWidget);
     });
   });
 
@@ -328,6 +274,10 @@ void main() {
               ),
             ),
             ChangeNotifierProvider<SeriesDetailsProvider>(create: (_) => SeriesDetailsProvider()),
+            ChangeNotifierProvider<ContinueWatchingProvider>(
+              create: (_) => ContinueWatchingProvider(storageService: StorageService()),
+            ),
+            ChangeNotifierProvider<FavoritesProvider>(create: (_) => FavoritesProvider(storageService: StorageService())),
           ],
           child: MaterialApp(
             home: Builder(
@@ -380,6 +330,10 @@ void main() {
           providers: [
             ChangeNotifierProvider<AuthProvider>(create: (_) => AuthProvider(apiService: apiService)),
             ChangeNotifierProvider<SeriesDetailsProvider>.value(value: seriesDetailsProvider),
+            ChangeNotifierProvider<ContinueWatchingProvider>(
+              create: (_) => ContinueWatchingProvider(storageService: StorageService()),
+            ),
+            ChangeNotifierProvider<FavoritesProvider>(create: (_) => FavoritesProvider(storageService: StorageService())),
           ],
           child: const MaterialApp(home: SeriesDetailsScreen(series: _testSeries)),
         );
@@ -389,15 +343,12 @@ void main() {
       await tester.pumpAndSettle();
       expect(callCount, 1);
 
-      // Simula "voltar e reabrir a mesma série": desmonta e monta uma nova
-      // instância da tela, mas com o MESMO SeriesDetailsProvider (registrado
-      // no topo da árvore, como em main.dart — sobrevive ao push/pop real).
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpWidget(buildApp());
       await tester.pumpAndSettle();
 
       expect(callCount, 1, reason: 'esperava reaproveitar o cache em memória, sem nova chamada de rede');
-      expect(find.text('Piloto'), findsOneWidget);
+      expect(find.text('Assistir T1E1'), findsOneWidget);
     });
   });
 }

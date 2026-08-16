@@ -7,7 +7,9 @@ import '../../core/theme/app_theme.dart';
 import '../../data/models/watch_progress.dart';
 import '../../data/models/xtream_models.dart';
 import '../../providers/auth_provider.dart';
-import '../../providers/content_provider.dart' show LoadStatus;
+import '../../providers/content_provider.dart' show ContentType, LoadStatus;
+import '../../providers/continue_watching_provider.dart';
+import '../../providers/favorites_provider.dart';
 import '../../providers/vod_details_provider.dart';
 import '../../widgets/network_image_with_fallback.dart';
 import '../../widgets/skeleton_loader.dart';
@@ -79,33 +81,32 @@ class _VodDetailsScreenState extends State<VodDetailsScreen> {
     context.read<VodDetailsProvider>().retry(apiService, _vodId);
   }
 
-  /// NÃO lê/recarrega [ContinueWatchingProvider] aqui de propósito -- ele só
-  /// existe dentro da árvore local da HomeScreen (ver
-  /// `MultiProvider` em HomeScreen.build), inacessível a partir desta tela
-  /// (empurrada por cima via Navigator.push, numa rota IRMÃ da HomeScreen,
-  /// não descendente dela -- tentar `context.read` aqui lança
-  /// ProviderNotFoundException antes mesmo de navegar pro Player). O
-  /// refresh da prateleira "Continuar Assistindo" já acontece quando esta
-  /// tela inteira fecha e volta pra Home, ver `_openVodDetails` em
-  /// home_screen.dart -- mesmo padrão já usado por
-  /// SeriesDetailsScreen._playEpisode, que também não tenta isso aqui.
-  void _play(BuildContext context) {
+  /// [startAtSeconds] > 0 retoma de um progresso salvo (ver
+  /// [ContinueWatchingProvider], agora acessível daqui -- provider de app
+  /// inteiro, ver main.dart); 0 (padrão) sempre que o botão mostra
+  /// "Assistir" em vez de "Continuar" (ver [_resolveProgress] em
+  /// [_MovieHeader]).
+  void _play(BuildContext context, {double startAtSeconds = 0}) {
     final apiService = context.read<AuthProvider>().apiService;
     if (apiService == null) return;
 
     final url = apiService.buildVodStreamUrl(widget.movie.streamId.toString(), widget.movie.containerExtension);
+    final continueWatching = context.read<ContinueWatchingProvider>();
 
-    Navigator.of(context).push(
-      fadeSlideRoute(
-        (_) => PlayerScreen(
-          url: url,
-          title: widget.movie.name,
-          contentId: widget.movie.streamId.toString(),
-          imageUrl: widget.movie.streamIcon,
-          progressType: WatchProgressType.vod,
-        ),
-      ),
-    );
+    Navigator.of(context)
+        .push(
+          fadeSlideRoute(
+            (_) => PlayerScreen(
+              url: url,
+              title: widget.movie.name,
+              contentId: widget.movie.streamId.toString(),
+              imageUrl: widget.movie.streamIcon,
+              progressType: WatchProgressType.vod,
+              startAtSeconds: startAtSeconds,
+            ),
+          ),
+        )
+        .then((_) => continueWatching.load());
   }
 
   @override
@@ -120,12 +121,18 @@ class _VodDetailsScreenState extends State<VodDetailsScreen> {
           focusNode: _rootFocusNode,
           autofocus: true,
           skipTraversal: true,
-          child: Consumer<VodDetailsProvider>(
-            builder: (context, provider, _) {
+          child: Consumer3<VodDetailsProvider, ContinueWatchingProvider, FavoritesProvider>(
+            builder: (context, provider, continueWatching, favorites, _) {
               final isActive = provider.activeVodId == _vodId;
               final status = isActive ? provider.status : LoadStatus.loading;
               final info = isActive ? provider.info?.info : null;
               final error = isActive ? provider.errorMessage : null;
+
+              final progressMatches =
+                  continueWatching.items.where((p) => p.type == WatchProgressType.vod && p.contentId == _vodId);
+              final progress = progressMatches.isEmpty || progressMatches.first.fraction >= 0.95
+                  ? null
+                  : progressMatches.first;
 
               return LayoutBuilder(
                 builder: (context, constraints) {
@@ -139,8 +146,11 @@ class _VodDetailsScreenState extends State<VodDetailsScreen> {
                       metadataError: error,
                       isWide: isWide,
                       playButtonFocusNode: _playButtonFocusNode,
-                      onPlay: () => _play(context),
+                      progress: progress,
+                      isFavorite: favorites.isFavorite(ContentType.vod, _vodId),
+                      onPlay: ({double startAtSeconds = 0}) => _play(context, startAtSeconds: startAtSeconds),
                       onRetryMetadata: _retry,
+                      onToggleFavorite: () => context.read<FavoritesProvider>().toggleFavorite(ContentType.vod, _vodId),
                     ),
                   );
                 },
@@ -160,8 +170,11 @@ class _MovieHeader extends StatelessWidget {
   final String? metadataError;
   final bool isWide;
   final FocusNode playButtonFocusNode;
-  final VoidCallback onPlay;
+  final WatchProgress? progress;
+  final bool isFavorite;
+  final void Function({double startAtSeconds}) onPlay;
   final VoidCallback onRetryMetadata;
+  final VoidCallback onToggleFavorite;
 
   const _MovieHeader({
     required this.movie,
@@ -170,8 +183,11 @@ class _MovieHeader extends StatelessWidget {
     required this.metadataError,
     required this.isWide,
     required this.playButtonFocusNode,
+    required this.progress,
+    required this.isFavorite,
     required this.onPlay,
     required this.onRetryMetadata,
+    required this.onToggleFavorite,
   });
 
   @override
@@ -193,8 +209,11 @@ class _MovieHeader extends StatelessWidget {
       metadataStatus: metadataStatus,
       metadataError: metadataError,
       playButtonFocusNode: playButtonFocusNode,
+      progress: progress,
+      isFavorite: isFavorite,
       onPlay: onPlay,
       onRetryMetadata: onRetryMetadata,
+      onToggleFavorite: onToggleFavorite,
     );
 
     return Padding(
@@ -227,8 +246,11 @@ class _MovieHeaderTexts extends StatelessWidget {
   final LoadStatus metadataStatus;
   final String? metadataError;
   final FocusNode playButtonFocusNode;
-  final VoidCallback onPlay;
+  final WatchProgress? progress;
+  final bool isFavorite;
+  final void Function({double startAtSeconds}) onPlay;
   final VoidCallback onRetryMetadata;
+  final VoidCallback onToggleFavorite;
 
   const _MovieHeaderTexts({
     required this.name,
@@ -237,8 +259,11 @@ class _MovieHeaderTexts extends StatelessWidget {
     required this.metadataStatus,
     required this.metadataError,
     required this.playButtonFocusNode,
+    required this.progress,
+    required this.isFavorite,
     required this.onPlay,
     required this.onRetryMetadata,
+    required this.onToggleFavorite,
   });
 
   String _formatDuration(double seconds) {
@@ -271,15 +296,33 @@ class _MovieHeaderTexts extends StatelessWidget {
           ],
         ),
         const SizedBox(height: AppSpacing.l),
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton.icon(
-            focusNode: playButtonFocusNode,
-            autofocus: true,
-            onPressed: onPlay,
-            icon: const Icon(Icons.play_arrow),
-            label: const Text('Assistir'),
-          ),
+        Row(
+          children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                focusNode: playButtonFocusNode,
+                autofocus: true,
+                onPressed: () => onPlay(startAtSeconds: (progress?.positionSeconds ?? 0).toDouble()),
+                icon: const Icon(Icons.play_arrow),
+                label: Text(progress != null ? 'Continuar' : 'Assistir'),
+              ),
+            ),
+            if (progress != null) ...[
+              const SizedBox(width: AppSpacing.s),
+              _ActionIconButton(
+                icon: Icons.replay,
+                tooltip: 'Assistir do início',
+                onPressed: () => onPlay(),
+              ),
+            ],
+            const SizedBox(width: AppSpacing.s),
+            _ActionIconButton(
+              icon: isFavorite ? Icons.favorite : Icons.favorite_border,
+              tooltip: isFavorite ? 'Remover dos favoritos' : 'Favoritar',
+              iconColor: isFavorite ? AppTheme.primaryColor : null,
+              onPressed: onToggleFavorite,
+            ),
+          ],
         ),
         const SizedBox(height: AppSpacing.l),
         if (metadataStatus == LoadStatus.loading && details == null) const _PlotSkeleton(),
@@ -295,6 +338,40 @@ class _MovieHeaderTexts extends StatelessWidget {
           Text('Direção: $director', style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
         ],
       ],
+    );
+  }
+}
+
+/// Mesmo widget de series_details_screen.dart -- duplicado aqui de
+/// propósito, mesmo padrão já usado por _MetaChip/_PosterImage neste par de
+/// arquivos (telas irmãs, sem um "widgets compartilhados" formal entre
+/// elas).
+class _ActionIconButton extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onPressed;
+  final Color? iconColor;
+
+  const _ActionIconButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+    this.iconColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceColor,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppTheme.primaryColor.withAlpha(60)),
+      ),
+      child: IconButton(
+        icon: Icon(icon, color: iconColor),
+        tooltip: tooltip,
+        onPressed: onPressed,
+      ),
     );
   }
 }

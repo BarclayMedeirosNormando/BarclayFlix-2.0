@@ -7,13 +7,31 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:provider/provider.dart';
+import 'package:provider/single_child_widget.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:iptv_app/data/models/xtream_models.dart';
+import 'package:iptv_app/data/services/storage_service.dart';
 import 'package:iptv_app/data/services/xtream_api_service.dart';
 import 'package:iptv_app/providers/auth_provider.dart';
+import 'package:iptv_app/providers/continue_watching_provider.dart';
+import 'package:iptv_app/providers/favorites_provider.dart';
 import 'package:iptv_app/providers/vod_details_provider.dart';
 import 'package:iptv_app/screens/vod_details/vod_details_screen.dart';
 import 'package:iptv_app/widgets/skeleton_loader.dart';
+
+/// [TESTE] Providers que agora vivem na raiz do app (ver main.dart) --
+/// ContentProvider/ContinueWatchingProvider/FavoritesProvider, precisam
+/// estar acima de QUALQUER tela alcançável a partir do hub, já que toda
+/// tela empurrada via Navigator.push é uma rota IRMÃ de qualquer outra
+/// (nunca descendente). Helper único pra não repetir essa lista em cada
+/// MultiProvider deste arquivo.
+List<SingleChildWidget> _rootLevelProviders() => [
+      ChangeNotifierProvider<ContinueWatchingProvider>(
+        create: (_) => ContinueWatchingProvider(storageService: StorageService()),
+      ),
+      ChangeNotifierProvider<FavoritesProvider>(create: (_) => FavoritesProvider(storageService: StorageService())),
+    ];
 
 const _testDns = 'http://servidor-teste.com:8080';
 const _testUser = 'cliente_teste';
@@ -71,6 +89,8 @@ Future<void> pumpVodDetailsScreen(
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
 
+  SharedPreferences.setMockInitialValues({});
+
   final apiService = XtreamApiService(
     dns: _testDns,
     username: _testUser,
@@ -83,6 +103,7 @@ Future<void> pumpVodDetailsScreen(
       providers: [
         ChangeNotifierProvider<AuthProvider>(create: (_) => AuthProvider(apiService: apiService)),
         ChangeNotifierProvider<VodDetailsProvider>(create: (_) => VodDetailsProvider()),
+        ..._rootLevelProviders(),
       ],
       child: const MaterialApp(home: VodDetailsScreen(movie: _testMovie)),
     ),
@@ -182,6 +203,7 @@ void main() {
 
   group('Voltar/Escape', () {
     testWidgets('Escape volta para a tela anterior', (tester) async {
+      SharedPreferences.setMockInitialValues({});
       await tester.pumpWidget(
         MultiProvider(
           providers: [
@@ -196,6 +218,7 @@ void main() {
               ),
             ),
             ChangeNotifierProvider<VodDetailsProvider>(create: (_) => VodDetailsProvider()),
+            ..._rootLevelProviders(),
           ],
           child: MaterialApp(
             home: Builder(
@@ -230,15 +253,16 @@ void main() {
   group('Botão Assistir', () {
     testWidgets(
       'tocar não lança ProviderNotFoundException<ContinueWatchingProvider> '
-      '(regressão: VodDetailsScreen é uma rota IRMÃ da HomeScreen, não descendente dela -- '
-      'ContinueWatchingProvider só existe na árvore local da HomeScreen, ver home_screen.dart)',
+      '(ContentProvider/ContinueWatchingProvider/FavoritesProvider agora vivem na raiz do '
+      'app -- ver main.dart -- exatamente pra ficarem acessíveis em toda tela alcançável a '
+      'partir do hub, já que toda tela empurrada via Navigator.push é uma rota IRMÃ de '
+      'qualquer outra, nunca descendente)',
       (tester) async {
+        SharedPreferences.setMockInitialValues({});
         // Mesma forma exata de árvore da produção: VodDetailsScreen empurrada
         // via Navigator.push a partir de uma rota que só tem AuthProvider/
-        // VodDetailsProvider acima -- nenhum ContinueWatchingProvider em
-        // lugar nenhum, igual a MaterialApp raiz de verdade (main.dart) +
-        // HomeScreen (que só registra ContinueWatchingProvider dentro do
-        // PRÓPRIO MultiProvider local, inacessível a rotas irmãs).
+        // VodDetailsProvider + os providers de nível raiz acima -- igual ao
+        // que main.dart monta de verdade hoje.
         await tester.pumpWidget(
           MultiProvider(
             providers: [
@@ -253,6 +277,7 @@ void main() {
                 ),
               ),
               ChangeNotifierProvider<VodDetailsProvider>(create: (_) => VodDetailsProvider()),
+              ..._rootLevelProviders(),
             ],
             child: MaterialApp(
               home: Builder(
@@ -298,6 +323,7 @@ void main() {
 
   group('Cache por vodId', () {
     testWidgets('reabrir o mesmo filme na mesma sessão não repete a chamada de rede', (tester) async {
+      SharedPreferences.setMockInitialValues({});
       var callCount = 0;
       Future<http.Response> countingHandler(http.Request request) async {
         if (request.url.queryParameters['action'] == 'get_vod_info') callCount++;
@@ -317,6 +343,7 @@ void main() {
           providers: [
             ChangeNotifierProvider<AuthProvider>(create: (_) => AuthProvider(apiService: apiService)),
             ChangeNotifierProvider<VodDetailsProvider>.value(value: vodDetailsProvider),
+            ..._rootLevelProviders(),
           ],
           child: const MaterialApp(home: VodDetailsScreen(movie: _testMovie)),
         );
