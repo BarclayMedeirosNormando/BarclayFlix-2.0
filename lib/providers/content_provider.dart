@@ -28,6 +28,26 @@ class TabState<TStream> {
   List<TStream> streams = const [];
 
   final Map<String, List<TStream>> _streamsCache = {};
+
+  /// [TESTE] Volta ao estado inicial (nenhuma categoria carregada, nenhum
+  /// stream em cache) -- chamado por [ContentProvider.updateApiService] ao
+  /// detectar troca de servidor. Sem isso, `categoriesStatus == success` de
+  /// um servidor ANTERIOR bloqueava `loadCategories` de buscar de novo (ver
+  /// aquele método: só busca se `categoriesStatus != success`), e a
+  /// categoria selecionada/cache de streams continuavam apontando pra IDs
+  /// que só existem no painel antigo -- causa raiz do bug relatado
+  /// "trocar de servidor mostra 'nenhum filme encontrado'/canais vazios no
+  /// servidor que não foi o primeiro aberto na sessão".
+  void reset() {
+    categoriesStatus = LoadStatus.idle;
+    categoriesError = null;
+    categories = const [];
+    selectedCategoryId = null;
+    streamsStatus = LoadStatus.idle;
+    streamsError = null;
+    streams = const [];
+    _streamsCache.clear();
+  }
 }
 
 /// Estado das 3 abas de conteúdo (Live TV, VOD, Séries), cada uma com seu
@@ -60,11 +80,30 @@ class ContentProvider extends ChangeNotifier {
   /// Troca o [XtreamApiService] usado por todas as chamadas subsequentes --
   /// chamado pelo `ChangeNotifierProxyProvider` em main.dart assim que
   /// `AuthProvider.apiService` fica disponível (login) ou muda (trocar de
-  /// servidor). Não dispara `notifyListeners()`: só troca a referência pra
-  /// próxima chamada de rede usar, sem invalidar categorias/streams já
-  /// carregados (trocar de servidor já leva pra uma ServerSelectionScreen
-  /// nova, que por sua vez recria a HomeScreen/ContentProvider do zero).
+  /// servidor).
+  ///
+  /// [TESTE] CORRIGIDO: antes assumia que trocar de servidor recriava este
+  /// provider do zero (verdade quando ele vivia dentro da árvore local da
+  /// HomeScreen) -- deixou de ser verdade quando ele virou provider de
+  /// RAIZ do app (ver doc de [_apiService]): a MESMA instância sobrevive a
+  /// qualquer troca de servidor pelo resto da sessão. Sem o reset abaixo,
+  /// `live`/`vod`/`series` continuavam com categorias/streams em cache do
+  /// servidor ANTERIOR -- `loadCategories` nem tentava buscar de novo
+  /// (`categoriesStatus == success` já satisfeito) e a categoria
+  /// selecionada/cache de streams apontavam pra IDs que só existem no
+  /// painel antigo. Sintoma relatado: trocar de servidor faz o SEGUNDO
+  /// (qualquer um que não seja o primeiro aberto na sessão) mostrar
+  /// "nenhum filme encontrado"/canais vazios em Ao Vivo/Filmes/Séries.
+  /// `identical` (não `==`) de propósito -- um novo login sempre cria uma
+  /// instância nova de [XtreamApiService] (ver AuthProvider.login), mesmo
+  /// reentrando no MESMO servidor.
   void updateApiService(XtreamApiService apiService) {
+    if (_apiService != null && !identical(_apiService, apiService)) {
+      live.reset();
+      vod.reset();
+      series.reset();
+      notifyListeners();
+    }
     _apiService = apiService;
   }
 
