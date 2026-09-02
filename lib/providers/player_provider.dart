@@ -356,14 +356,33 @@ class PlayerProvider extends ChangeNotifier {
     _safeNotify();
   }
 
+  /// [TESTE] Antes desta correção, este handler (e [_onPlayingChanged])
+  /// ignorava qualquer evento assim que `_status` virava
+  /// [PlayerLoadStatus.error] — só um novo [playUrl] (via [retry] ou troca
+  /// de conteúdo) conseguia tirar o status dali. Isso quebrava a
+  /// recuperação automática do `PlaybackHealthMonitor`: o retry com backoff
+  /// dele reabre a MESMA URL chamando `player.open()` direto no [Player] por
+  /// baixo (ver `PlaybackHealthMonitor._handleFailure`), sem passar por
+  /// [playUrl] — então se um `stream.error` explícito chegou a disparar
+  /// durante a queda (comum em Ao Vivo; diferente do "stall silencioso" que
+  /// nunca seta erro nenhum, coberto por outro teste), o vídeo voltava a
+  /// tocar normalmente, mas `_status` ficava travado em `error` PARA SEMPRE
+  /// — nenhum evento de buffering/playing seguinte conseguia mudá-lo.
+  /// Sintoma relatado por usuário real: o banner "Reconectando..." (ver
+  /// `PlayerScreen._onPlayerProviderChanged`, que só esconde o aviso ao ver
+  /// `status == playing`) nunca sumia, mesmo com o conteúdo já reproduzindo
+  /// de verdade. Ver player_provider_test.dart ("recuperação de status após
+  /// stream.error") pro cenário reproduzido em teste.
   void _onBufferingChanged(bool buffering) {
-    if (_status == PlayerLoadStatus.error) return;
     _status = buffering ? PlayerLoadStatus.buffering : PlayerLoadStatus.playing;
     _safeNotify();
   }
 
+  /// [TESTE] Ver o comentário de [_onBufferingChanged] — mesma correção,
+  /// mesmo motivo: um sinal real de `playing == true` (sem buffering)
+  /// também precisa conseguir tirar o status de `error`, não só de
+  /// `buffering`.
   void _onPlayingChanged(bool playing) {
-    if (_status == PlayerLoadStatus.error) return;
     if (playing && !player.state.buffering) {
       _status = PlayerLoadStatus.playing;
     }

@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:media_kit/media_kit.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:iptv_app/data/models/watch_progress.dart';
@@ -9,6 +10,25 @@ import '../test_helpers/fake_player.dart';
 
 const _testUrl = 'http://servidor-teste.com:8080/movie/u/p/1.mp4';
 const _testTitle = 'Filme Teste';
+
+/// [FakePlatformPlayer] só expõe `emitDuration`/`emitPosition`/`emitPlaying`
+/// — aqui reaproveitamos o mesmo seam (mesmo padrão de
+/// playback_health_monitor_test.dart e player_screen_error_overlay_test.dart)
+/// só acrescentando `emitError`, sem tocar no arquivo compartilhado.
+class _FaultyFakePlatformPlayer extends FakePlatformPlayer {
+  void emitError(String message) => errorController.add(message);
+
+  void emitBuffering(bool buffering) => bufferingController.add(buffering);
+}
+
+typedef _FaultySetup = ({PlayerProvider provider, _FaultyFakePlatformPlayer fake});
+
+_FaultySetup _buildFaultyProvider() {
+  final fake = _FaultyFakePlatformPlayer();
+  final player = Player(platformPlayer: fake);
+  final provider = PlayerProvider(player: player);
+  return (provider: provider, fake: fake);
+}
 
 /// Deixa o [PlayerProvider] em estado de reprodução normal de um VOD
 /// (duração conhecida, [PlayerLoadStatus.playing]) — pré-condição de
@@ -272,6 +292,61 @@ void main() {
       await setup.provider.playUrl(_testUrl, title: _testTitle);
 
       expect(setup.fake.seekCallCount, 0);
+    });
+  });
+
+  group('Recuperação de status após stream.error (retry direto do PlaybackHealthMonitor)', () {
+    // Reproduz o bug relatado em Ao Vivo: o PlaybackHealthMonitor se
+    // recupera reabrindo a MESMA url via `player.open()` direto (nunca por
+    // `PlayerProvider.playUrl`) — então o único jeito de o status sair de
+    // `error` de novo é através de um evento de buffering/playing genuíno
+    // vindo do player, exatamente como testado aqui.
+    test(
+      'buffering=false após um stream.error tira o status de error, mesmo sem passar por playUrl/retry',
+      () async {
+        final setup = _buildFaultyProvider();
+        await setup.provider.playUrl(_testUrl, title: _testTitle);
+
+        setup.fake.emitError('falha de conexão');
+        expect(setup.provider.status, PlayerLoadStatus.error);
+
+        // O que o PlaybackHealthMonitor dispara de verdade ao se recuperar
+        // sozinho já tocaria esse mesmo sinal (buffering voltando a false)
+        // quando a URL reaberta volta a produzir frames.
+        setup.fake.emitBuffering(false);
+
+        expect(
+          setup.provider.status,
+          PlayerLoadStatus.playing,
+          reason: 'status não pode ficar travado em error depois que o player '
+              'volta a reproduzir de verdade, mesmo sem um novo playUrl()',
+        );
+      },
+    );
+
+    test('playing=true (sem buffering) após um stream.error também tira o status de error', () async {
+      final setup = _buildFaultyProvider();
+      await setup.provider.playUrl(_testUrl, title: _testTitle);
+
+      setup.fake.emitError('falha de conexão');
+      expect(setup.provider.status, PlayerLoadStatus.error);
+
+      setup.fake.emitPlaying(true);
+
+      expect(setup.provider.status, PlayerLoadStatus.playing);
+    });
+
+    test('um segundo stream.error volta a marcar error normalmente (a correção não desliga o guard de erro)', () async {
+      final setup = _buildFaultyProvider();
+      await setup.provider.playUrl(_testUrl, title: _testTitle);
+
+      setup.fake.emitError('falha de conexão');
+      setup.fake.emitBuffering(false); // recupera
+      expect(setup.provider.status, PlayerLoadStatus.playing);
+
+      setup.fake.emitError('caiu de novo');
+
+      expect(setup.provider.status, PlayerLoadStatus.error);
     });
   });
 }

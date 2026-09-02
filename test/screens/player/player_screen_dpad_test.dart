@@ -39,6 +39,22 @@ bool _rootHasAutofocus(WidgetTester tester) {
   return focusNode != null && focusNode.hasFocus;
 }
 
+/// [TESTE] A barra de progresso não tem nenhum ícone/texto fixo que a
+/// distinga (ao contrário dos botões, achados por `find.byIcon`) — mesmo
+/// padrão de [_rootHasAutofocus] acima: localiza pelo `debugLabel` do
+/// próprio [FocusNode] (ver `_progressBarFocusNode` em player_screen.dart).
+Finder _progressBarFinder() =>
+    find.byWidgetPredicate((w) => w is Focus && w.focusNode?.debugLabel == 'player-progress-bar');
+
+bool _isProgressBarFocused(WidgetTester tester) {
+  final focusNode = tester.widget<Focus>(_progressBarFinder()).focusNode;
+  return focusNode != null && focusNode.hasFocus;
+}
+
+void _focusProgressBar(WidgetTester tester) {
+  tester.widget<Focus>(_progressBarFinder()).focusNode!.requestFocus();
+}
+
 /// Sobe a PlayerScreen direto como home da rota, com um [PlayerProvider]
 /// apoiado num player fake (ver test_helpers/fake_player.dart).
 ///
@@ -313,6 +329,128 @@ void main() {
 
       expect(find.byIcon(Icons.replay_10), findsNothing);
       expect(find.byIcon(Icons.forward_10), findsNothing);
+    });
+  });
+
+  group('Modo de busca por D-Pad na barra de progresso (VOD)', () {
+    // [TESTE] Cobre o bug relatado: sem este modo, a barra de progresso era
+    // 100% inacessível por D-Pad (ExcludeFocus no Slider tirava o único
+    // candidato a foco da travessia por completo) — só os botões -10s/+10s
+    // serviam pra buscar posição pelo controle remoto.
+    Future<FakePlayerSetup> pumpVodPlayerScreen(WidgetTester tester) async {
+      final setup = await pumpPlayerScreen(tester);
+      setup.fake.emitDuration(const Duration(minutes: 10));
+      setup.fake.emitPosition(const Duration(minutes: 2));
+      setup.fake.emitPlaying(true);
+      await tester.pump();
+      return setup;
+    }
+
+    testWidgets('seta para baixo a partir do play/pause foca a barra de progresso', (tester) async {
+      await pumpVodPlayerScreen(tester);
+
+      focusItem(tester, find.byIcon(Icons.play_circle_fill));
+      await tester.pump();
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+
+      expect(_isProgressBarFocused(tester), isTrue);
+    });
+
+    testWidgets('OK liga o modo de busca; seta direita chama seekRelative(+10s) em vez de mover o foco', (tester) async {
+      final setup = await pumpVodPlayerScreen(tester);
+
+      _focusProgressBar(tester);
+      await tester.pump();
+
+      expect(setup.fake.seekCallCount, 0);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+
+      expect(setup.fake.seekCallCount, 1);
+      expect(setup.fake.lastSeekPosition, const Duration(minutes: 2, seconds: 10));
+      expect(
+        _isProgressBarFocused(tester),
+        isTrue,
+        reason: 'o foco não deve sair da barra enquanto ainda em modo de busca',
+      );
+    });
+
+    testWidgets('em modo de busca, seta esquerda chama seekRelative(-10s)', (tester) async {
+      final setup = await pumpVodPlayerScreen(tester);
+
+      _focusProgressBar(tester);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+
+      expect(setup.fake.seekCallCount, 1);
+      expect(setup.fake.lastSeekPosition, const Duration(minutes: 1, seconds: 50));
+    });
+
+    testWidgets('OK de novo desliga o modo de busca; a próxima seta volta a mover o foco normalmente', (tester) async {
+      final setup = await pumpVodPlayerScreen(tester);
+
+      _focusProgressBar(tester);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter); // liga
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter); // desliga
+      await tester.pump();
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pump();
+
+      expect(setup.fake.seekCallCount, 0, reason: 'fora do modo de busca, a barra não intercepta seta nenhuma');
+      expect(
+        _isProgressBarFocused(tester),
+        isFalse,
+        reason: 'seta pra cima deveria mover o foco pra fora da barra normalmente',
+      );
+    });
+
+    testWidgets('perder o foco desliga o modo de busca automaticamente', (tester) async {
+      await pumpVodPlayerScreen(tester);
+
+      _focusProgressBar(tester);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter); // liga o modo de busca
+      await tester.pump();
+
+      expect(find.textContaining('OK para sair'), findsOneWidget);
+
+      focusItem(tester, find.byIcon(Icons.play_circle_fill));
+      await tester.pump();
+
+      expect(
+        find.textContaining('OK para sair'),
+        findsNothing,
+        reason: 'sair da barra sem desligar o modo manualmente ainda deve desligá-lo (ver _onProgressBarFocusChanged)',
+      );
+    });
+
+    testWidgets('Escape durante o modo de busca só desliga o modo, sem fechar o player', (tester) async {
+      await pumpVodPlayerScreen(tester);
+
+      _focusProgressBar(tester);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter); // liga
+      await tester.pump();
+
+      final handled = await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+
+      expect(handled, isTrue);
+      expect(find.byType(PlayerScreen), findsOneWidget, reason: 'Escape em modo de busca não deveria fechar o player');
+      expect(_isProgressBarFocused(tester), isTrue);
+      expect(find.textContaining('OK para sair'), findsNothing, reason: 'Escape deveria ter desligado o modo de busca');
     });
   });
 

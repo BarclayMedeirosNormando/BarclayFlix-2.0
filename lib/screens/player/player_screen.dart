@@ -151,6 +151,14 @@ class _PlayerScreenBodyState extends State<_PlayerScreenBody> {
   final FocusNode _retryFocusNode = FocusNode(debugLabel: 'player-retry');
   final FocusNode _inputFocusNode = FocusNode(debugLabel: 'player-input-surface');
 
+  // [TESTE] Ver _handleProgressBarKeyEvent pro porquê deste FocusNode/estado
+  // existirem: o Slider de progresso continua fora da travessia por D-Pad
+  // (ExcludeFocus, ver _BottomBar), mas este outro nó — por FORA do Slider —
+  // agora dá à barra uma parada normal na navegação, com um "modo de busca"
+  // que OK liga/desliga.
+  final FocusNode _progressBarFocusNode = FocusNode(debugLabel: 'player-progress-bar');
+  bool _seekModeActive = false;
+
   // Texto momentâneo ("-10s"/"+10s") mostrado ao acionar o seek — só
   // feedback visual, sem estado de reprodução real por trás.
   String? _seekFeedbackText;
@@ -197,6 +205,7 @@ class _PlayerScreenBodyState extends State<_PlayerScreenBody> {
     }
 
     _playerProvider.addListener(_onPlayerProviderChanged);
+    _progressBarFocusNode.addListener(_onProgressBarFocusChanged);
     _healthMonitor = PlaybackHealthMonitor(
       player: _playerProvider.player,
       fallbackUrls: widget.fallbackUrls,
@@ -271,6 +280,7 @@ class _PlayerScreenBodyState extends State<_PlayerScreenBody> {
     _hideControlsTimer?.cancel();
     _seekFeedbackTimer?.cancel();
     _playerProvider.removeListener(_onPlayerProviderChanged);
+    _progressBarFocusNode.removeListener(_onProgressBarFocusChanged);
     _healthMonitor?.dispose();
     _backFocusNode.dispose();
     _playPauseFocusNode.dispose();
@@ -279,6 +289,7 @@ class _PlayerScreenBodyState extends State<_PlayerScreenBody> {
     _seekForwardFocusNode.dispose();
     _retryFocusNode.dispose();
     _inputFocusNode.dispose();
+    _progressBarFocusNode.dispose();
 
     if (!_isDesktopFullscreenCapable) {
       // Libera a orientação de volta ao padrão do sistema ao sair do player.
@@ -332,6 +343,80 @@ class _PlayerScreenBodyState extends State<_PlayerScreenBody> {
     }
 
     _scheduleHideControls();
+    return KeyEventResult.ignored;
+  }
+
+  /// [TESTE] Sai do "modo de busca" (ver [_handleProgressBarKeyEvent]) toda
+  /// vez que o foco sai da barra de progresso por qualquer motivo (seta pra
+  /// cima/baixo, controles escondidos, troca de tela...) — sem isso, voltar
+  /// pra barra depois herdaria o modo ainda ligado, sem nenhuma pista visual
+  /// de como ele foi ativado.
+  void _onProgressBarFocusChanged() {
+    if (!_progressBarFocusNode.hasFocus && _seekModeActive) {
+      setState(() => _seekModeActive = false);
+    }
+  }
+
+  static const _seekModeToggleKeys = {
+    LogicalKeyboardKey.select,
+    LogicalKeyboardKey.enter,
+    LogicalKeyboardKey.numpadEnter,
+    LogicalKeyboardKey.gameButtonA,
+  };
+
+  /// [TESTE] Segundo ponto de entrada de teclado da tela (o primeiro é
+  /// [_handleSurfaceKeyEvent]) — resolve o bug relatado de a barra de
+  /// progresso ser 100% inacessível por D-Pad (só os botões -10s/+10s
+  /// serviam pra buscar posição pelo controle remoto).
+  ///
+  /// O Slider em si continua fora da travessia (ver `ExcludeFocus` em
+  /// `_BottomBar` e o teste "nunca recebe foco via navegação por seta" em
+  /// player_screen_dpad_test.dart) — motivo de sempre: focado, ele captura
+  /// as 4 setas pra ajustar o próprio valor, e Android TV não tem Tab pra
+  /// escapar dali. Este handler fica num FocusNode DIFERENTE, por FORA do
+  /// Slider excluído (ver [_progressBarFocusNode]), que funciona como mais
+  /// uma parada normal da travessia.
+  ///
+  /// OK/Select LIGA e DESLIGA o "modo de busca" (mesma tecla nos dois
+  /// sentidos): só com o modo ligado, esquerda/direita passam a chamar
+  /// [_seekRelative] (mesmo -10s/+10s dos botões dedicados, com o mesmo
+  /// feedback visual) em vez de mover o foco pra outro controle. Qualquer
+  /// outra tecla (inclusive cima/baixo) não é interceptada — o que já tira
+  /// do modo de busca assim que o foco realmente sai daqui (ver
+  /// [_onProgressBarFocusChanged]).
+  ///
+  /// Por que OK (e não Voltar) desliga o modo: o botão físico "Voltar" do
+  /// Android TV nunca chega aqui como [KeyEvent] (ver o comentário no
+  /// `PopScope` do `build()` abaixo) — ele sempre vira um pop de rota de
+  /// verdade, então não haveria como "capturar Voltar" neste handler; o
+  /// `PopScope` trata esse caso separadamente (sai do modo de busca em vez
+  /// de fechar o player). Escape (teclado, Windows) É um KeyEvent de
+  /// verdade e chega aqui normalmente, por isso continua valendo como saída
+  /// adicional.
+  KeyEventResult _handleProgressBarKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+
+    if (_seekModeToggleKeys.contains(key)) {
+      setState(() => _seekModeActive = !_seekModeActive);
+      return KeyEventResult.handled;
+    }
+
+    if (!_seekModeActive) return KeyEventResult.ignored;
+
+    if (key == LogicalKeyboardKey.escape) {
+      setState(() => _seekModeActive = false);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowLeft) {
+      _seekRelative(const Duration(seconds: -10));
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowRight) {
+      _seekRelative(const Duration(seconds: 10));
+      return KeyEventResult.handled;
+    }
+
     return KeyEventResult.ignored;
   }
 
@@ -405,11 +490,19 @@ class _PlayerScreenBodyState extends State<_PlayerScreenBody> {
       child: PopScope(
         // Enquanto em tela cheia (Windows), o botão/tecla de voltar sai da
         // tela cheia em vez de fechar o player — igual ao comportamento
-        // esperado de qualquer player desktop.
-        canPop: !_isFullscreen,
+        // esperado de qualquer player desktop. [TESTE] Mesma ideia agora
+        // vale para o "modo de busca" da barra de progresso (ver
+        // _handleProgressBarKeyEvent): o botão físico "Voltar" do Android TV
+        // NUNCA chega como KeyEvent (só como pop de rota de verdade, aqui),
+        // então é só neste PopScope que dá pra evitar fechar o player por
+        // engano no meio de uma busca.
+        canPop: !_isFullscreen && !_seekModeActive,
         onPopInvokedWithResult: (didPop, result) {
-          if (!didPop && _isFullscreen) {
+          if (didPop) return;
+          if (_isFullscreen) {
             _toggleFullscreen();
+          } else if (_seekModeActive) {
+            setState(() => _seekModeActive = false);
           }
         },
         child: Scaffold(
@@ -485,6 +578,9 @@ class _PlayerScreenBodyState extends State<_PlayerScreenBody> {
                             fullscreenFocusNode: _fullscreenFocusNode,
                             seekBackwardFocusNode: _seekBackwardFocusNode,
                             seekForwardFocusNode: _seekForwardFocusNode,
+                            progressBarFocusNode: _progressBarFocusNode,
+                            seekModeActive: _seekModeActive,
+                            onProgressBarKeyEvent: _handleProgressBarKeyEvent,
                             onBack: _exitPlayer,
                             onToggleFullscreen: _toggleFullscreen,
                             onSeek: _seekRelative,
@@ -683,6 +779,9 @@ class _ControlsOverlay extends StatelessWidget {
   final FocusNode fullscreenFocusNode;
   final FocusNode seekBackwardFocusNode;
   final FocusNode seekForwardFocusNode;
+  final FocusNode progressBarFocusNode;
+  final bool seekModeActive;
+  final KeyEventResult Function(FocusNode, KeyEvent) onProgressBarKeyEvent;
   final VoidCallback onBack;
   final VoidCallback onToggleFullscreen;
   final ValueChanged<Duration> onSeek;
@@ -695,6 +794,9 @@ class _ControlsOverlay extends StatelessWidget {
     required this.fullscreenFocusNode,
     required this.seekBackwardFocusNode,
     required this.seekForwardFocusNode,
+    required this.progressBarFocusNode,
+    required this.seekModeActive,
+    required this.onProgressBarKeyEvent,
     required this.onBack,
     required this.onToggleFullscreen,
     required this.onSeek,
@@ -735,7 +837,11 @@ class _ControlsOverlay extends StatelessWidget {
               onSeek: onSeek,
             ),
             const Spacer(),
-            const _BottomBar(),
+            _BottomBar(
+              progressBarFocusNode: progressBarFocusNode,
+              seekModeActive: seekModeActive,
+              onKeyEvent: onProgressBarKeyEvent,
+            ),
           ],
         ),
       ),
@@ -1008,7 +1114,15 @@ class _CenterPlayPauseButton extends StatelessWidget {
 }
 
 class _BottomBar extends StatelessWidget {
-  const _BottomBar();
+  final FocusNode progressBarFocusNode;
+  final bool seekModeActive;
+  final KeyEventResult Function(FocusNode, KeyEvent) onKeyEvent;
+
+  const _BottomBar({
+    required this.progressBarFocusNode,
+    required this.seekModeActive,
+    required this.onKeyEvent,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1028,35 +1142,73 @@ class _BottomBar extends StatelessWidget {
                     alignment: Alignment.centerLeft,
                     child: _LiveBadge(),
                   )
-                : Row(
-                    children: [
-                      Text(_formatDuration(data.position), style: const TextStyle(color: Colors.white, fontSize: 12)),
-                      Expanded(
-                        // Fora da navegação por D-Pad de propósito: o Slider
-                        // do Flutter, quando focado, captura as 4 setas para
-                        // ajustar o próprio valor (inclusive cima/baixo) —
-                        // ou seja, uma vez focado, não haveria como sair dele
-                        // só com o D-Pad (sem Tab, que Android TV não tem).
-                        // Continua 100% arrastável por toque/mouse.
-                        child: ExcludeFocus(
-                          child: Slider(
-                            value: data.position.inMilliseconds
-                                .clamp(0, data.duration.inMilliseconds)
-                                .toDouble(),
-                            max: data.duration.inMilliseconds > 0
-                                ? data.duration.inMilliseconds.toDouble()
-                                : 1,
-                            activeColor: AppTheme.primaryColor,
-                            onChanged: (value) {
-                              context
-                                  .read<PlayerProvider>()
-                                  .seek(Duration(milliseconds: value.round()));
-                            },
+                // [TESTE] Antes, esta linha inteira ficava fora da travessia
+                // por D-Pad (o Slider era o único candidato a foco, e
+                // ExcludeFocus o tirava da jogada por completo) — bug
+                // relatado: nenhum jeito de alcançar a barra pelo controle
+                // remoto, só pelos botões -10s/+10s. Agora
+                // DpadFocusHighlight+Focus dão à barra uma parada normal na
+                // travessia, com um "modo de busca" (ver
+                // PlayerScreen._handleProgressBarKeyEvent) que reaproveita
+                // o mesmo _seekRelative dos botões -10s/+10s — o Slider em
+                // si continua excluído (ver ExcludeFocus abaixo), pelo
+                // motivo de sempre.
+                : DpadFocusHighlight(
+                    focusNode: progressBarFocusNode,
+                    borderRadius: BorderRadius.circular(8),
+                    builder: (context, focusNode, hasFocus) => Focus(
+                      focusNode: focusNode,
+                      onKeyEvent: onKeyEvent,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Row(
+                            children: [
+                              Text(_formatDuration(data.position), style: const TextStyle(color: Colors.white, fontSize: 12)),
+                              Expanded(
+                                // Fora da navegação por D-Pad de propósito: o Slider
+                                // do Flutter, quando focado, captura as 4 setas para
+                                // ajustar o próprio valor (inclusive cima/baixo) —
+                                // ou seja, uma vez focado, não haveria como sair dele
+                                // só com o D-Pad (sem Tab, que Android TV não tem).
+                                // Continua 100% arrastável por toque/mouse.
+                                child: ExcludeFocus(
+                                  child: Slider(
+                                    value: data.position.inMilliseconds
+                                        .clamp(0, data.duration.inMilliseconds)
+                                        .toDouble(),
+                                    max: data.duration.inMilliseconds > 0
+                                        ? data.duration.inMilliseconds.toDouble()
+                                        : 1,
+                                    activeColor: AppTheme.primaryColor,
+                                    onChanged: (value) {
+                                      context
+                                          .read<PlayerProvider>()
+                                          .seek(Duration(milliseconds: value.round()));
+                                    },
+                                  ),
+                                ),
+                              ),
+                              Text(_formatDuration(data.duration), style: const TextStyle(color: Colors.white, fontSize: 12)),
+                            ],
                           ),
-                        ),
+                          // Dica textual só quando a barra está focada — sem
+                          // ela, nada na tela indicaria que OK faz alguma
+                          // coisa aqui (diferente dos botões -10s/+10s, cujo
+                          // ícone já é autoexplicativo).
+                          if (hasFocus)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Text(
+                                seekModeActive
+                                    ? 'Use ◀ ▶ para buscar · OK para sair'
+                                    : 'OK para buscar com o controle',
+                                style: const TextStyle(color: Colors.white70, fontSize: 11),
+                              ),
+                            ),
+                        ],
                       ),
-                      Text(_formatDuration(data.duration), style: const TextStyle(color: Colors.white, fontSize: 12)),
-                    ],
+                    ),
                   ),
           ),
         );
