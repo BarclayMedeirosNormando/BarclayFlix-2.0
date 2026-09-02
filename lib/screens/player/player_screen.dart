@@ -339,6 +339,33 @@ class _PlayerScreenBodyState extends State<_PlayerScreenBody> {
 
     if (!_controlsVisible) {
       _showControls();
+      // [TESTE] Sem este salto, o foco fica preso em `_inputFocusNode` para
+      // sempre depois de reexibir os controles: esconder já tinha jogado o
+      // foco pra cá de propósito (ver `_scheduleHideControls`), e esta tecla
+      // que só revela consome o evento sem navegar (`handled`, acima) — a
+      // busca DIRECIONAL da PRÓXIMA seta não atravessa a fronteira deste nó
+      // sozinha (mesmo motivo já documentado no salto inicial de
+      // `initState`, via `nextFocus()`: este nó é `skipTraversal` e fica
+      // FORA do `FocusTraversalGroup` dos controles). Sem repetir esse mesmo
+      // salto aqui, toda seta seguinte também cai neste método (o foco nunca
+      // saiu daqui), sempre só reiniciando o timer de auto-hide sem navegar
+      // — usuário travado precisando sair e reabrir o player pra conseguir
+      // mover o foco de novo. Bug relatado por usuário real na TV: só
+      // conseguia alcançar a barra de progresso se apertasse seta pra baixo
+      // IMEDIATAMENTE ao abrir o vídeo (antes do auto-hide de 4s, com o foco
+      // ainda no controle do salto inicial); depois de esperar o auto-hide
+      // disparar uma vez, a navegação parava de funcionar completamente.
+      //
+      // `addPostFrameCallback` (não uma chamada síncrona aqui) de propósito
+      // — mesmo padrão do salto inicial em `initState`: `_showControls()`
+      // só AGENDA a reconstrução (`setState`), o `ExcludeFocus` dos
+      // controles ainda está com `excluding: true` na árvore de fato
+      // montada até o próximo frame rodar — chamar `nextFocus()` síncrono
+      // agora não acharia nenhum candidato válido (tudo ainda excluído).
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _inputFocusNode.nextFocus();
+      });
       return KeyEventResult.handled;
     }
 

@@ -133,6 +133,60 @@ void main() {
 
       expect(setup.fake.seekCallCount, 0);
     });
+
+    // [TESTE] Bug relatado por usuário real testando o "modo de busca" da
+    // barra de progresso na TV: "o -10s/+10s funciona, mas se quiser fazer
+    // de novo não vai" / "a barra chega, mas ao buscar pra frente não vai".
+    // Causa raiz: TODO seek deixa `_status` em `buffering` por um instante
+    // (mesmo sinal que `_onBufferingChanged` usa pra rebufferização normal),
+    // e a guarda antiga de `seekRelative` exigia `_status == playing`
+    // estritamente -- um segundo seek disparado ENQUANTO essa
+    // rebufferização passageira ainda não tinha voltado a `playing` sozinha
+    // caía na guarda e não fazia nada. Usa `_FaultyFakePlatformPlayer` (não
+    // `buildFakePlayerProvider`) só para ter `emitBuffering` disponível, sem
+    // tocar em fake_player.dart (mesmo padrão já usado no grupo de
+    // recuperação de status após stream.error, mais abaixo neste arquivo).
+    test('permite buscar de novo durante rebufferização de um seek anterior (já tocou antes)', () async {
+      final setup = _buildFaultyProvider();
+      await setup.provider.playUrl(_testUrl, title: _testTitle);
+      setup.fake.emitDuration(const Duration(minutes: 10));
+      setup.fake.emitPosition(const Duration(minutes: 2));
+      setup.fake.emitPlaying(true);
+      await pumpEventQueue();
+
+      await setup.provider.seekRelative(const Duration(seconds: 10));
+      expect(setup.fake.seekCallCount, 1);
+
+      // Simula a rebufferização passageira que o media_kit de verdade
+      // dispara ao resincronizar na nova posição -- sem nenhum
+      // emitPosition/emitPlaying(false) no meio, só o sinal de buffering
+      // mesmo (a posição/duração já conhecidas continuam válidas).
+      setup.fake.emitBuffering(true);
+      await pumpEventQueue();
+      expect(setup.provider.status, PlayerLoadStatus.buffering);
+
+      await setup.provider.seekRelative(const Duration(seconds: 10));
+
+      expect(
+        setup.fake.seekCallCount,
+        2,
+        reason: 'o segundo seek não deveria ser bloqueado só por _status ainda estar buffering',
+      );
+    });
+
+    test('continua bloqueado durante o buffering INICIAL, antes de qualquer playing (comportamento preservado)', () async {
+      final setup = buildFakePlayerProvider();
+      await setup.provider.playUrl(_testUrl, title: _testTitle);
+      setup.fake.emitDuration(const Duration(minutes: 10));
+      // Sem emitPlaying: nunca chegou a tocar -- `_hasPlayedOnce` continua
+      // false, então buffering aqui ainda deve bloquear (mesmo cenário do
+      // teste "não faz nada enquanto ainda buffering" acima, só reafirmando
+      // que a correção de _hasPlayedOnce não afrouxou esse caso).
+
+      await setup.provider.seekRelative(const Duration(seconds: 10));
+
+      expect(setup.fake.seekCallCount, 0);
+    });
   });
 
   group('Progresso de reprodução ("Continuar Assistindo")', () {

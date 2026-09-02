@@ -138,7 +138,22 @@ void main() {
 
   group('Controles auto-hidden', () {
     testWidgets(
-      'primeira seta/Enter só revela os controles, sem ativar nada nem mover foco; a próxima tecla já navega',
+      // [TESTE] Nome/expectativa atualizados: a versão antiga deste teste
+      // afirmava "sem mover foco" e simulava a navegação real com um
+      // `focusItem()` manual antes do Enter — o que escondia um bug de
+      // verdade (foco preso em `_inputFocusNode` pra sempre depois de
+      // reexibir, já que busca DIRECIONAL não atravessa a fronteira desse
+      // nó sozinha). Bug relatado por usuário real na TV: só conseguia
+      // navegar pelos controles (inclusive alcançar a barra de progresso)
+      // se apertasse uma seta ANTES do auto-hide de 4s disparar pela
+      // primeira vez; depois de esperar, nenhuma seta seguinte movia o foco
+      // pra lugar nenhum. Ver o comentário em
+      // `_PlayerScreenBodyState._handleSurfaceKeyEvent` pro fix: a mesma
+      // tecla que revela agora também repete o salto de foco do autofoco
+      // inicial (`_inputFocusNode.nextFocus()`), pousando no botão Voltar —
+      // por isso a navegação com a PRÓXIMA seta funciona de verdade aqui,
+      // sem nenhum `focusItem()` simulando o passo que estava quebrado.
+      'primeira seta/Enter revela os controles e já deixa o foco pronto pro primeiro controle; a próxima seta navega de verdade',
       (tester) async {
         final setup = await pumpPlayerScreen(tester);
 
@@ -148,27 +163,28 @@ void main() {
         final opacityFinder = find.byType(AnimatedOpacity);
         expect(tester.widget<AnimatedOpacity>(opacityFinder).opacity, 0.0);
 
-        final primaryFocusBefore = FocusManager.instance.primaryFocus;
-
         final handled = await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
         await tester.pump();
 
         expect(handled, isTrue, reason: 'o evento deve ser consumido (handled) só para reexibir os controles');
         expect(setup.fake.playOrPauseCallCount, 0, reason: 'a tecla que só revela não pode ativar nenhum controle');
-        expect(
-          FocusManager.instance.primaryFocus,
-          same(primaryFocusBefore),
-          reason: 'o foco não deve se mover na tecla que só reexibe os controles',
-        );
 
-        // Controles voltaram a ficar visíveis (AnimatedOpacity 200ms).
+        // Controles voltaram a ficar visíveis (AnimatedOpacity 200ms) — o
+        // `pump` acima já processa o postFrameCallback do salto de foco.
         await tester.pump(const Duration(milliseconds: 250));
         expect(tester.widget<AnimatedOpacity>(opacityFinder).opacity, 1.0);
+        expect(
+          isFocused(tester, find.byIcon(Icons.arrow_back)),
+          isTrue,
+          reason: 'a própria tecla de revelar já devia ter pousado o foco no primeiro controle real (Voltar)',
+        );
 
-        // A partir daqui os controles já estão focáveis de novo — a
-        // PRÓXIMA tecla navega/ativa normalmente.
-        focusItem(tester, find.byIcon(Icons.play_circle_fill));
+        // A PRÓXIMA seta precisa navegar de verdade (sem nenhum focusItem()
+        // manual) — é exatamente esse passo que ficava travado antes do fix.
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
         await tester.pump();
+        expect(isFocused(tester, find.byIcon(Icons.play_circle_fill)), isTrue);
+
         await tester.sendKeyEvent(LogicalKeyboardKey.enter);
         await tester.pump();
 

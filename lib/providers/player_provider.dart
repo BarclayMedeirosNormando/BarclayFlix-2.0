@@ -186,6 +186,13 @@ class PlayerProvider extends ChangeNotifier {
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
 
+  // [TESTE] Ver o comentário de [seekRelative] pro bug que este campo
+  // resolve — distingue "ainda carregando, nunca chegou a tocar" (onde
+  // buffering pode significar posição/duração ainda não confiáveis) de
+  // "já tocou, isso aqui é só uma rebufferização passageira" (onde a
+  // posição/duração já são válidas, ex: logo depois de um seek).
+  bool _hasPlayedOnce = false;
+
   // Metadados de "Continuar Assistindo" do conteúdo atual — `null` sempre
   // que a mídia aberta não deve ter progresso rastreado (Live TV: HomeScreen
   // nunca passa `contentId` pra ela, ver _playLiveChannel).
@@ -242,6 +249,9 @@ class PlayerProvider extends ChangeNotifier {
     _errorMessage = null;
     _position = Duration.zero;
     _duration = Duration.zero;
+    // [TESTE] Nova URL/reload = nova sessão de reprodução — não deve herdar
+    // o "já tocou uma vez" de uma mídia anterior (ver [seekRelative]).
+    _hasPlayedOnce = false;
     _safeNotify();
 
     try {
@@ -322,16 +332,36 @@ class PlayerProvider extends ChangeNotifier {
 
   /// Avança/retrocede a partir da posição atual em [offset] (negativo
   /// retrocede), sem passar de zero nem da duração total — usado pelos
-  /// botões de -10s/+10s da PlayerScreen, já que o `Player.seek` do
-  /// media_kit é absoluto (recebe a posição alvo, não um delta).
+  /// botões de -10s/+10s da PlayerScreen (e pelo "modo de busca" da barra de
+  /// progresso pelo D-Pad), já que o `Player.seek` do media_kit é absoluto
+  /// (recebe a posição alvo, não um delta).
   ///
-  /// Não faz nada (sem lançar exceção) fora do estado estável de reprodução
-  /// [PlayerLoadStatus.playing] — cobre Live TV/duração ainda desconhecida
-  /// ([isLive]), carregamento, buffering e erro, nenhum dos quais tem uma
-  /// posição válida pra buscar.
+  /// Não faz nada (sem lançar exceção) em Live TV/duração ainda desconhecida
+  /// ([isLive]), carregamento, erro, ou buffering ANTES de qualquer
+  /// reprodução real ter começado (nenhum desses tem uma posição válida pra
+  /// buscar).
+  ///
+  /// [TESTE] Antes, também exigia `_status == playing` estritamente — mas
+  /// TODO seek (inclusive um anterior, deste mesmo método) deixa `_status`
+  /// em [PlayerLoadStatus.buffering] por um instante enquanto o player
+  /// resincroniza na nova posição (ver [_onBufferingChanged]), só voltando a
+  /// `playing` quando essa rebufferização termina sozinha. Um segundo seek
+  /// disparado nesse meio-tempo (ex: apertar +10s duas vezes seguidas, ou
+  /// buscar repetidamente pelo D-Pad na barra de progresso — o cenário mais
+  /// comum, já que ali dá pra repetir a tecla livremente) caía nesta guarda
+  /// e não fazia nada. Sintoma relatado por usuário real testando na TV:
+  /// "o -10s/+10s funciona, mas se quiser fazer de novo não vai" / "a barra
+  /// chega, mas ao buscar pra frente não vai" — a primeira busca já deixava
+  /// o status em buffering, travando qualquer busca seguinte.
+  /// [_hasPlayedOnce] é o que permite diferenciar esse buffering "de
+  /// rebusca" (posição/duração já válidas, seguro buscar de novo) do
+  /// buffering INICIAL antes do primeiro `playing` de verdade (coberto por
+  /// "não faz nada enquanto ainda buffering (duração já conhecida)" em
+  /// player_provider_test.dart — esse caso continua bloqueado).
   Future<void> seekRelative(Duration offset) async {
     if (isLive) return;
-    if (_status != PlayerLoadStatus.playing) return;
+    final canSeekWhileBuffering = _status == PlayerLoadStatus.buffering && _hasPlayedOnce;
+    if (_status != PlayerLoadStatus.playing && !canSeekWhileBuffering) return;
 
     final target = _position + offset;
     final clamped = target < Duration.zero
@@ -375,6 +405,11 @@ class PlayerProvider extends ChangeNotifier {
   /// stream.error") pro cenário reproduzido em teste.
   void _onBufferingChanged(bool buffering) {
     _status = buffering ? PlayerLoadStatus.buffering : PlayerLoadStatus.playing;
+    // [TESTE] Ver o comentário de [seekRelative] — marca que esta sessão de
+    // reprodução já chegou a tocar de verdade pelo menos uma vez, pra
+    // distinguir de um `buffering` inicial (antes do primeiro `playing`,
+    // onde posição/duração ainda podem não ser confiáveis).
+    if (!buffering) _hasPlayedOnce = true;
     _safeNotify();
   }
 
@@ -385,6 +420,7 @@ class PlayerProvider extends ChangeNotifier {
   void _onPlayingChanged(bool playing) {
     if (playing && !player.state.buffering) {
       _status = PlayerLoadStatus.playing;
+      _hasPlayedOnce = true;
     }
     // Captura a posição exata no instante em que o usuário pausa (ou o
     // player pausa sozinho, ex: perdeu foco) — não espera o próximo tick
