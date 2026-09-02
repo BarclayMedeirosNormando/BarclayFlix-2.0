@@ -301,6 +301,16 @@ void main() {
     // `PlayerProvider.playUrl`) — então o único jeito de o status sair de
     // `error` de novo é através de um evento de buffering/playing genuíno
     // vindo do player, exatamente como testado aqui.
+    // [TESTE] `emitError`/`emitBuffering`/`emitPlaying` passam por
+    // `StreamController.add`, que só entrega aos listeners (aqui, os
+    // handlers do PlayerProvider) num microtask POSTERIOR -- sem
+    // `await pumpEventQueue()` depois de cada emissão, a asserção seguinte
+    // roda antes do handler processar o evento (é exatamente o que
+    // `_playingVod`/`playingVodWithProgress`, no topo deste arquivo, já
+    // fazem e o comentário deles já explica). Faltou isso na primeira
+    // versão deste teste -- pego rodando `flutter test` de verdade (falhava
+    // com "Actual: PlayerLoadStatus.buffering", o status ainda não tinha
+    // nem processado o próprio `emitError`).
     test(
       'buffering=false após um stream.error tira o status de error, mesmo sem passar por playUrl/retry',
       () async {
@@ -308,12 +318,14 @@ void main() {
         await setup.provider.playUrl(_testUrl, title: _testTitle);
 
         setup.fake.emitError('falha de conexão');
+        await pumpEventQueue();
         expect(setup.provider.status, PlayerLoadStatus.error);
 
         // O que o PlaybackHealthMonitor dispara de verdade ao se recuperar
         // sozinho já tocaria esse mesmo sinal (buffering voltando a false)
         // quando a URL reaberta volta a produzir frames.
         setup.fake.emitBuffering(false);
+        await pumpEventQueue();
 
         expect(
           setup.provider.status,
@@ -329,9 +341,11 @@ void main() {
       await setup.provider.playUrl(_testUrl, title: _testTitle);
 
       setup.fake.emitError('falha de conexão');
+      await pumpEventQueue();
       expect(setup.provider.status, PlayerLoadStatus.error);
 
       setup.fake.emitPlaying(true);
+      await pumpEventQueue();
 
       expect(setup.provider.status, PlayerLoadStatus.playing);
     });
@@ -341,10 +355,13 @@ void main() {
       await setup.provider.playUrl(_testUrl, title: _testTitle);
 
       setup.fake.emitError('falha de conexão');
+      await pumpEventQueue();
       setup.fake.emitBuffering(false); // recupera
+      await pumpEventQueue();
       expect(setup.provider.status, PlayerLoadStatus.playing);
 
       setup.fake.emitError('caiu de novo');
+      await pumpEventQueue();
 
       expect(setup.provider.status, PlayerLoadStatus.error);
     });

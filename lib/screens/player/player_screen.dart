@@ -357,7 +357,13 @@ class _PlayerScreenBodyState extends State<_PlayerScreenBody> {
     }
   }
 
-  static const _seekModeToggleKeys = {
+  // [TESTE] `static final`, não `const` — mesmo motivo já documentado em
+  // `_revealKeys` acima: LogicalKeyboardKey sobrescreve `==` com igualdade
+  // não-primitiva, e o analyzer/compilador rejeita um Set const nesse caso
+  // ("does not have a primitive equality"). Erro pego rodando `flutter test`
+  // de verdade (quebrava a COMPILAÇÃO do arquivo inteiro, derrubando todo
+  // o resto da suíte de testes do app).
+  static final _seekModeToggleKeys = {
     LogicalKeyboardKey.select,
     LogicalKeyboardKey.enter,
     LogicalKeyboardKey.numpadEnter,
