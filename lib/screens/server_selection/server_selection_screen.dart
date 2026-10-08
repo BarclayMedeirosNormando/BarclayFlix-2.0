@@ -119,9 +119,12 @@ class _ServerSelectionScreenState extends State<ServerSelectionScreen> {
     final nomeCliente = (freshNomeCliente != null && freshNomeCliente.isNotEmpty)
         ? freshNomeCliente
         : persistedNomeCliente;
+    // A versão instalada aparece sempre (com ou sem nome de cliente): é o
+    // que o suporte pede para saber se o aparelho está atualizado.
+    final versaoSufixo = _appVersion != null ? ' - v$_appVersion' : '';
     final titulo = (nomeCliente != null && nomeCliente.isNotEmpty)
-        ? 'Bem-vindo, $nomeCliente${_appVersion != null ? ' - v$_appVersion' : ''}'
-        : 'Escolha um servidor';
+        ? 'Bem-vindo, $nomeCliente$versaoSufixo'
+        : 'Escolha um servidor$versaoSufixo';
 
     return Scaffold(
       appBar: AppBar(title: const Text('Escolha um servidor')),

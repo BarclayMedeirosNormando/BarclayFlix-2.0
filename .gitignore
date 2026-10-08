@@ -47,6 +47,7 @@ app.*.map.json
 # Artefatos de release empacotados por versão (ver scripts/build_release.ps1)
 # — binários grandes gerados a partir do código-fonte, nunca commitados.
 /releases/
+/versoes/
 
 # Secrets / configuração de ambiente — a URL real do Apps Script (e qualquer
 # outra credencial) entra via --dart-define (ver AppConfig/README.md), nunca
