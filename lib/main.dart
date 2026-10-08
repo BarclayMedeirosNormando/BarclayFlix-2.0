@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -8,6 +9,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'config/app_config.dart';
 import 'core/theme/app_theme.dart';
+import 'data/services/error_report_service.dart';
 import 'providers/auth_provider.dart';
 import 'providers/content_provider.dart';
 import 'providers/continue_watching_provider.dart';
@@ -20,6 +22,24 @@ import 'screens/splash/splash_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Falhas não tratadas viram uma linha na aba "Logs" (sem bloquear e sem
+  // nunca enviar dados sensíveis, ver ErrorReportService). O comportamento
+  // padrão (imprimir no console) continua.
+  final previousFlutterOnError = FlutterError.onError;
+  FlutterError.onError = (details) {
+    ErrorReportService.instance.report(ErrorCategory.app, details.exceptionAsString());
+    if (previousFlutterOnError != null) {
+      previousFlutterOnError(details);
+    } else {
+      FlutterError.presentError(details);
+    }
+  };
+  PlatformDispatcher.instance.onError = (error, stack) {
+    ErrorReportService.instance.report(ErrorCategory.app, error.toString());
+    debugPrint('Erro não tratado: $error\n$stack');
+    return true;
+  };
 
   // A fonte Inter é self-hosted (ver assets/fonts/ + a seção "fonts" do
   // pubspec.yaml) e aplicada via TextTheme.apply(fontFamily: 'Inter') em

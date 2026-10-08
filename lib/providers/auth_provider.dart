@@ -7,6 +7,7 @@ import '../data/models/xtream_user_info.dart';
 import '../data/services/catalog_cache.dart';
 import '../data/services/device_auth_service.dart';
 import '../data/services/device_id_service.dart';
+import '../data/services/error_report_service.dart';
 import '../data/services/xtream_api_service.dart';
 
 enum AuthStatus { idle, loading, authenticated, error }
@@ -109,6 +110,9 @@ class AuthProvider extends ChangeNotifier {
       notifyListeners();
       return null;
     } catch (e) {
+      // Falha INESPERADA (não é um estado de negócio do backend como
+      // inativo/expirado/nao_registrado, que não são erros do app).
+      ErrorReportService.instance.report(ErrorCategory.ativacao, 'Ativação do aparelho: $e');
       _status = AuthStatus.error;
       _errorMessage = e.toString();
       _errorCode = null;
@@ -144,6 +148,10 @@ class AuthProvider extends ChangeNotifier {
 
       return AuthResult(server: server, userInfo: userInfo);
     } catch (e) {
+      ErrorReportService.instance.report(
+        ErrorCategory.ativacao,
+        'Login no servidor ${ErrorReportService.hostOf(server.dns)}: $e',
+      );
       _status = AuthStatus.error;
       _errorMessage = e.toString();
       _errorCode = null;
