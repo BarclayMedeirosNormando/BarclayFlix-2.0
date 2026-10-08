@@ -38,6 +38,9 @@ dependencies:
   # Requisições HTTP para o Master Login (Google Apps Script) e Xtream Codes API
   http: ^1.2.2
 
+  # Abre o link de download da versão nova (aviso de atualização).
+  url_launcher: ^6.3.1
+
   # Gerenciamento de estado
   provider: ^6.1.2
 

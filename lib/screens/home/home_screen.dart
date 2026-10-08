@@ -4,10 +4,12 @@ import 'package:provider/provider.dart';
 
 import '../../core/navigation/fade_slide_route.dart';
 import '../../core/theme/app_theme.dart';
+import '../../data/services/version_check_service.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/content_provider.dart' show ContentType;
 import '../../providers/profiles_provider.dart';
 import '../../widgets/dpad_focus_highlight.dart';
+import '../../widgets/update_available_dialog.dart';
 import '../activation/activation_screen.dart';
 import '../server_selection/server_selection_screen.dart';
 import '../settings/settings_screen.dart';
@@ -82,6 +84,25 @@ class _HubBody extends StatefulWidget {
 
 class _HubBodyState extends State<_HubBody> {
   bool _switchingServer = false;
+
+  /// A checagem de versão roda no máximo UMA vez por abertura do app (a Home
+  /// é reconstruída ao voltar de outras telas e ao trocar de servidor).
+  static bool _updateCheckedThisLaunch = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _checkForUpdate());
+  }
+
+  Future<void> _checkForUpdate() async {
+    if (_updateCheckedThisLaunch) return;
+    _updateCheckedThisLaunch = true;
+
+    final update = await VersionCheckService().checkForUpdate();
+    if (update == null || !mounted) return;
+    await showUpdateAvailableDialog(context, update);
+  }
 
   void _openTile(_HubTile tile) {
     switch (tile) {
