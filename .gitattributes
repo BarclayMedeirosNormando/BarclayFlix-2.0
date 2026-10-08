@@ -1,0 +1,19 @@
+# Fins de linha: o repositorio guarda sempre LF; o Git converte sozinho no
+# Windows. Evita que o diff mostre o arquivo inteiro como alterado.
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.ttf binary
+*.otf binary
+*.jar binary
+*.keystore binary
+*.jks binary

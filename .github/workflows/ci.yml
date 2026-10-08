@@ -23,3 +23,34 @@ jobs:
       - run: flutter analyze
 
       - run: flutter test
+
+  build-android:
+    # Garante que o APK de release compila para as 3 ABIs, em especial a
+    # armeabi-v7a (TVs/TV Boxes de 32 bits, como as TCL). Sem key.properties
+    # o build assina com a chave de debug (ver android/app/build.gradle.kts):
+    # serve só para checar a compilação, NÃO para distribuir.
+    needs: analyze-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.44.4"
+          channel: "stable"
+          cache: true
+
+      - run: flutter pub get
+
+      - run: flutter build apk --release --split-per-abi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apks-release-por-abi
+          path: build/app/outputs/flutter-apk/*.apk
+          retention-days: 7
