@@ -5,6 +5,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../data/models/watch_progress.dart';
+import '../data/services/error_report_service.dart';
 import '../data/services/storage_service.dart';
 
 enum PlayerLoadStatus { idle, loading, buffering, playing, error }
@@ -256,10 +257,11 @@ class PlayerProvider extends ChangeNotifier {
 
     try {
       await _openWithHwdecFallback(url);
-    } catch (_) {
+    } catch (e) {
       // Se o usuário já saiu da tela (provider disposto) ou já pediu outra
       // mídia enquanto esta abria, ignora o resultado tardio.
       if (_disposed || _currentUrl != url) return;
+      _reportPlaybackError('não abriu: $e');
       _status = PlayerLoadStatus.error;
       _errorMessage = 'Não foi possível reproduzir este conteúdo. Verifique '
           'sua conexão ou tente novamente.';
@@ -379,7 +381,18 @@ class PlayerProvider extends ChangeNotifier {
     await player.stop();
   }
 
+  /// Registra (sem bloquear) uma falha de reprodução. Cita só o servidor
+  /// (`host:porta`) e o tipo, nunca a URL do stream (carrega usuário/senha).
+  void _reportPlaybackError(String detail) {
+    final kind = isLive ? 'live' : 'vod/série';
+    ErrorReportService.instance.report(
+      ErrorCategory.reproducao,
+      '$kind (${ErrorReportService.hostOf(_currentUrl)}): $detail',
+    );
+  }
+
   void _onPlayerError(String message) {
+    _reportPlaybackError(message);
     _status = PlayerLoadStatus.error;
     _errorMessage = 'Não foi possível reproduzir este conteúdo. Verifique '
         'sua conexão ou tente novamente.';

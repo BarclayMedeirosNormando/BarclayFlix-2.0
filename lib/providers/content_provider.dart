@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' hide Category;
 
 import '../core/errors/app_exceptions.dart';
 import '../data/models/xtream_models.dart';
+import '../data/services/error_report_service.dart';
 import '../data/services/xtream_api_service.dart';
 
 enum ContentType { live, vod, series }
@@ -244,9 +245,11 @@ class ContentProvider extends ChangeNotifier {
       state.categories = transform == null ? categories : transform(categories);
       state.categoriesStatus = LoadStatus.success;
     } on XtreamApiException catch (e) {
+      _reportCatalogError(state, 'categorias', e.message);
       state.categoriesStatus = LoadStatus.error;
       state.categoriesError = e.message;
-    } catch (_) {
+    } catch (e) {
+      _reportCatalogError(state, 'categorias', e.toString());
       state.categoriesStatus = LoadStatus.error;
       state.categoriesError = 'Não foi possível carregar as categorias.';
     }
@@ -271,24 +274,45 @@ class ContentProvider extends ChangeNotifier {
       return;
     }
 
+    // Esvazia a lista ANTES de buscar: as telas só mostram o esqueleto de
+    // carregamento quando `streams.isEmpty`; sem isso, a lista da categoria
+    // anterior ficava na tela (com o título da nova) até a resposta chegar.
+    state.streams = const [];
     state.streamsStatus = LoadStatus.loading;
     state.streamsError = null;
     notifyListeners();
 
+    // Se o usuário trocar de categoria enquanto esta busca está em andamento,
+    // a resposta atrasada não pode sobrescrever a categoria atual.
+    bool stale() => state.selectedCategoryId != categoryId;
+
     try {
       final streams = await fetch(categoryId, forceRefresh: forceRefresh);
-      state.streams = streams;
       state._streamsCache[categoryId] = streams;
+      if (stale()) return;
+      state.streams = streams;
       state.streamsStatus = LoadStatus.success;
     } on XtreamApiException catch (e) {
+      _reportCatalogError(state, 'itens', e.message);
+      if (stale()) return;
       state.streamsStatus = LoadStatus.error;
       state.streamsError = e.message;
-    } catch (_) {
+    } catch (e) {
+      _reportCatalogError(state, 'itens', e.toString());
+      if (stale()) return;
       state.streamsStatus = LoadStatus.error;
       state.streamsError = 'Não foi possível carregar os itens desta categoria.';
     }
 
     notifyListeners();
+  }
+
+  /// Registra (sem bloquear) uma falha de catálogo, dizendo de qual aba
+  /// (live/vod/series) e de qual servidor veio.
+  void _reportCatalogError<TStream>(TabState<TStream> state, String what, String detail) {
+    final tab = identical(state, live) ? 'live' : (identical(state, vod) ? 'vod' : 'series');
+    final host = ErrorReportService.hostOf(_apiService?.dns);
+    ErrorReportService.instance.report(ErrorCategory.catalogo, '$tab $what ($host): $detail');
   }
 
   Future<void> _refresh<TStream>(

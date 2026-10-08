@@ -6,6 +6,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../core/constants/app_constants.dart';
 import '../models/app_update_info.dart';
+import 'apps_script_http.dart';
 
 /// Pergunta ao Apps Script (`action: check_version`) qual é a versão mais
 /// nova publicada para esta plataforma (aba "Versao" da planilha) e compara
@@ -19,8 +20,6 @@ class VersionCheckService {
   final Future<String> Function() _installedVersion;
   final String? _platformName;
   final String _endpoint;
-
-  static const _maxRedirectHops = 5;
 
   VersionCheckService({
     http.Client? client,
@@ -50,7 +49,8 @@ class VersionCheckService {
 
     try {
       final uri = Uri.parse(_endpoint);
-      final response = await _postFollowingRedirects(
+      final response = await postJsonFollowingRedirects(
+        _client,
         uri,
         jsonEncode({'action': 'check_version', 'plataforma': platform}),
       );
@@ -103,24 +103,5 @@ class VersionCheckService {
       numbers.add(n);
     }
     return numbers.isEmpty ? null : numbers;
-  }
-
-  /// Apps Script responde o POST com 302 para `script.googleusercontent.com`
-  /// (comportamento normal, ver DeviceAuthService._followRedirect): o JSON de
-  /// verdade está no destino, buscado via GET.
-  Future<http.Response> _postFollowingRedirects(Uri uri, String body) async {
-    var response = await _client
-        .post(uri, headers: {'Content-Type': 'application/json'}, body: body)
-        .timeout(AppConstants.networkTimeout);
-    var current = uri;
-    var hops = _maxRedirectHops;
-    while (response.statusCode >= 300 && response.statusCode < 400 && hops > 0) {
-      final location = response.headers['location'];
-      if (location == null || location.isEmpty) break;
-      current = current.resolve(location);
-      response = await _client.get(current).timeout(AppConstants.networkTimeout);
-      hops--;
-    }
-    return response;
   }
 }
