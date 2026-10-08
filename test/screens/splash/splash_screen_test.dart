@@ -35,6 +35,7 @@ Future<http.Response> _json(Object body) async => http.Response(jsonEncode(body)
 Future<http.Response> Function(http.Request) _buildHandler({
   String? errorCodeForDevice,
   String? errorMessageForDevice,
+  bool deviceServiceDown = false,
 }) {
   return (request) async {
     // Checa a rota Xtream PRIMEIRO, por um sufixo de path especifico
@@ -52,6 +53,8 @@ Future<http.Response> Function(http.Request) _buildHandler({
     }
 
     if (request.url.toString().startsWith(AppConstants.deviceAuthUrl)) {
+      // Apps Script fora do ar: HTTP 503 sem corpo/código de negócio.
+      if (deviceServiceDown) return http.Response('', 503);
       if (errorCodeForDevice != null) {
         return _json({
           'status': 'erro',
@@ -81,6 +84,7 @@ Future<void> pumpSplashScreen(
   SavedProfile? seed,
   String? errorCodeForDevice,
   String? errorMessageForDevice,
+  bool deviceServiceDown = false,
 }) async {
   FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform({});
   final storageService = StorageService(storage: const FlutterSecureStorage());
@@ -91,6 +95,7 @@ Future<void> pumpSplashScreen(
   final client = MockClient(_buildHandler(
     errorCodeForDevice: errorCodeForDevice,
     errorMessageForDevice: errorMessageForDevice,
+    deviceServiceDown: deviceServiceDown,
   ));
   final authProvider = AuthProvider(
     deviceAuthService: DeviceAuthService(client: client),
@@ -128,6 +133,27 @@ SavedProfile _savedProfile() {
 }
 
 void main() {
+  testWidgets(
+    'perfil salvo + ativação fora do ar (falha de rede): tenta de novo e entra direto na HomeScreen com o perfil salvo',
+    (tester) async {
+      await pumpSplashScreen(tester, seed: _savedProfile(), deviceServiceDown: true);
+
+      expect(find.byType(HomeScreen), findsOneWidget);
+      expect(find.byType(ActivationScreen), findsNothing);
+      expect(find.byType(SplashScreen), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'sem perfil salvo + ativação fora do ar: continua na ActivationScreen',
+    (tester) async {
+      await pumpSplashScreen(tester, deviceServiceDown: true);
+
+      expect(find.byType(ActivationScreen), findsOneWidget);
+      expect(find.byType(HomeScreen), findsNothing);
+    },
+  );
+
   testWidgets('sem perfil salvo: mostra ActivationScreen (sem erro nenhum)', (tester) async {
     await pumpSplashScreen(tester);
 
