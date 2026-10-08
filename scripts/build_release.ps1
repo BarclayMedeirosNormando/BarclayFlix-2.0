@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Gera os builds de release (Android + Windows) da versao atual do app e
-    organiza os artefatos em releases/<versao>/{android,windows}/.
+    organiza os artefatos em versoes/<versao>/{android,windows}/.
 
 .DESCRIPTION
     Como rodar (a partir da raiz do projeto, ou de qualquer lugar):
@@ -12,13 +12,13 @@
       1. Le a versao em pubspec.yaml (campo version:, parte antes do "+").
       2. Roda flutter analyze e flutter test -- aborta o script se algum dos
          dois falhar (nao builda release em cima de codigo quebrado).
-      3. Cria releases/<versao>/android/ e releases/<versao>/windows/.
+      3. Cria versoes/<versao>/android/ e versoes/<versao>/windows/.
       4. flutter build apk --release --split-per-abi, copia CADA APK gerado
          (um por ABI -- tipicamente armeabi-v7a, arm64-v8a e x86_64) para
-         releases/<versao>/android/BarclayFlix-<versao>-<abi>.apk.
+         versoes/<versao>/android/BarclayFlix-<versao>-<abi>.apk.
       5. flutter build windows --release, copia TODO o conteudo de
          build/windows/x64/runner/Release/ (.exe + DLLs necessarias) para
-         releases/<versao>/windows/.
+         versoes/<versao>/windows/.
 
     Build Windows NAO e fatal para o script: se falhar (ex: falta o
     componente "C++ ATL for latest v143 build tools" no Visual Studio,
@@ -127,7 +127,7 @@ if ($pubspecContent -notmatch '(?m)^version:\s*(\S+)\s*$') {
 $fullVersion = $matches[1]
 $version = $fullVersion.Split('+')[0]
 
-Write-Host "Versao detectada: $fullVersion (artefatos vao para releases/$version/)" -ForegroundColor Cyan
+Write-Host "Versao detectada: $fullVersion (artefatos vao para versoes/$version/)" -ForegroundColor Cyan
 
 # 2. Analyze + test -- aborta o script se falhar (nao builda release em
 # cima de codigo com problema conhecido).
@@ -143,8 +143,8 @@ if ($LASTEXITCODE -ne 0) {
     throw "flutter test falhou (exit code $LASTEXITCODE) -- build abortado."
 }
 
-# 3. Estrutura de pastas releases/<versao>/{android,windows}/
-$releaseDir = Join-Path $root "releases\$version"
+# 3. Estrutura de pastas versoes/<versao>/{android,windows}/
+$releaseDir = Join-Path $root "versoes\$version"
 $androidDir = Join-Path $releaseDir 'android'
 $windowsDir = Join-Path $releaseDir 'windows'
 New-Item -ItemType Directory -Force -Path $androidDir | Out-Null
@@ -200,6 +200,27 @@ try {
         $androidApkPaths += $apkDest
         Write-Host "APK copiado para $apkDest" -ForegroundColor Green
     }
+
+    # APK UNIVERSAL (todas as ABIs num arquivo so): a planilha "Versao" tem
+    # UMA linha "android" com UM link, usado por celular e TV (inclusive as
+    # TCL de 32 bits, armeabi-v7a). Este e o arquivo para esse link. Os APKs
+    # por ABI acima sao menores, para instalar direto num aparelho.
+    Write-Step 'flutter build apk --release (universal)'
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    flutter build apk --release $appsScriptUrlDefine
+    $ErrorActionPreference = $previousErrorActionPreference
+    if ($LASTEXITCODE -ne 0) {
+        throw "flutter build apk --release (universal) terminou com exit code $LASTEXITCODE"
+    }
+    $universalApk = Join-Path $apkSourceDir 'app-release.apk'
+    if (-not (Test-Path $universalApk)) {
+        throw "APK universal nao encontrado em $universalApk."
+    }
+    $universalDest = Join-Path $androidDir "BarclayFlix-$version-universal.apk"
+    Copy-Item -Path $universalApk -Destination $universalDest -Force
+    $androidApkPaths += $universalDest
+    Write-Host "APK universal copiado para $universalDest" -ForegroundColor Green
 } catch {
     $ErrorActionPreference = $previousErrorActionPreference
     $androidOk = $false
@@ -225,6 +246,13 @@ try {
     $winSource = Join-Path $root 'build\windows\x64\runner\Release'
     Copy-Item -Path (Join-Path $winSource '*') -Destination $windowsDir -Recurse -Force
     Write-Host "Executavel + DLLs copiados para $windowsDir" -ForegroundColor Green
+
+    # Zip pronto para subir: o link da linha "windows" da planilha "Versao"
+    # deve apontar para este arquivo.
+    $windowsZip = Join-Path $releaseDir "BarclayFlix-$version-windows.zip"
+    if (Test-Path $windowsZip) { Remove-Item $windowsZip -Force }
+    Compress-Archive -Path (Join-Path $windowsDir '*') -DestinationPath $windowsZip
+    Write-Host "Zip do Windows: $windowsZip" -ForegroundColor Green
 } catch {
     $ErrorActionPreference = $previousErrorActionPreference
     $windowsOk = $false
