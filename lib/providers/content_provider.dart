@@ -163,32 +163,19 @@ class ContentProvider extends ChangeNotifier {
         ContentType.series => series.selectedCategoryId,
       };
 
-  /// Carrega as categorias de [type], injetando "Todos" como primeira opção
-  /// e, na primeira carga (nenhuma categoria selecionada ainda), a
-  /// selecionando automaticamente — só na primeira, para não sobrescrever
-  /// uma escolha do usuário em cargas seguintes (ex: reabrir a aba depois
-  /// de já ter escolhido outra categoria). Se já foram carregadas com
-  /// sucesso nesta sessão, não repete a chamada de rede (use [refresh] para
-  /// forçar).
+  /// Carrega SÓ as categorias de [type], injetando "Todos" como primeira
+  /// opção. Nenhuma categoria é selecionada sozinha: os streams só são
+  /// buscados quando o usuário escolhe uma ([selectCategory]). Antes, "Todos"
+  /// era selecionada automaticamente aqui, o que baixava o catálogo INTEIRO
+  /// (dezenas de milhares de canais/filmes) só pra mostrar a lista de
+  /// categorias. Se já foram carregadas com sucesso nesta sessão, não repete
+  /// a chamada de rede (use [refresh] para forçar).
   Future<void> loadCategories(ContentType type) {
     return switch (type) {
-      ContentType.live => _loadCategoriesAndDefaultToAll(live, _api.getLiveCategories, _fetchLiveStreams),
-      ContentType.vod => _loadCategoriesAndDefaultToAll(vod, _api.getVodCategories, _fetchVodStreams),
-      ContentType.series =>
-        _loadCategoriesAndDefaultToAll(series, _api.getSeriesCategories, _fetchSeriesStreams),
+      ContentType.live => _loadCategories(live, _api.getLiveCategories, transform: _withAllCategory),
+      ContentType.vod => _loadCategories(vod, _api.getVodCategories, transform: _withAllCategory),
+      ContentType.series => _loadCategories(series, _api.getSeriesCategories, transform: _withAllCategory),
     };
-  }
-
-  Future<void> _loadCategoriesAndDefaultToAll<TStream>(
-    TabState<TStream> state,
-    Future<List<Category>> Function() fetchCategories,
-    Future<List<TStream>> Function(String categoryId) fetchStreams,
-  ) async {
-    await _loadCategories(state, fetchCategories, transform: _withAllCategory);
-
-    if (state.categoriesStatus == LoadStatus.success && state.selectedCategoryId == null) {
-      await _selectCategory(state, allCategoriesId, fetchStreams);
-    }
   }
 
   static List<Category> _withAllCategory(List<Category> categories) => [_allCategory, ...categories];
@@ -198,14 +185,14 @@ class ContentProvider extends ChangeNotifier {
   /// 3 abas, nunca uma soma de chamadas por categoria.
   String? _resolveCategoryId(String categoryId) => categoryId == allCategoriesId ? null : categoryId;
 
-  Future<List<LiveStream>> _fetchLiveStreams(String categoryId) =>
-      _api.getLiveStreams(categoryId: _resolveCategoryId(categoryId));
+  Future<List<LiveStream>> _fetchLiveStreams(String categoryId, {bool forceRefresh = false}) =>
+      _api.getLiveStreams(categoryId: _resolveCategoryId(categoryId), forceRefresh: forceRefresh);
 
-  Future<List<VodStream>> _fetchVodStreams(String categoryId) =>
-      _api.getVodStreams(categoryId: _resolveCategoryId(categoryId));
+  Future<List<VodStream>> _fetchVodStreams(String categoryId, {bool forceRefresh = false}) =>
+      _api.getVodStreams(categoryId: _resolveCategoryId(categoryId), forceRefresh: forceRefresh);
 
-  Future<List<Series>> _fetchSeriesStreams(String categoryId) =>
-      _api.getSeriesList(categoryId: _resolveCategoryId(categoryId));
+  Future<List<Series>> _fetchSeriesStreams(String categoryId, {bool forceRefresh = false}) =>
+      _api.getSeriesList(categoryId: _resolveCategoryId(categoryId), forceRefresh: forceRefresh);
 
   /// Seleciona [categoryId] na aba [type] e carrega os streams dessa
   /// categoria (usando cache em memória quando disponível).
@@ -225,17 +212,17 @@ class ContentProvider extends ChangeNotifier {
     return switch (type) {
       ContentType.live => _refresh(
           live,
-          () => _loadCategories(live, _api.getLiveCategories, transform: _withAllCategory),
+          () => _loadCategories(live, () => _api.getLiveCategories(forceRefresh: true), transform: _withAllCategory),
           _fetchLiveStreams,
         ),
       ContentType.vod => _refresh(
           vod,
-          () => _loadCategories(vod, _api.getVodCategories, transform: _withAllCategory),
+          () => _loadCategories(vod, () => _api.getVodCategories(forceRefresh: true), transform: _withAllCategory),
           _fetchVodStreams,
         ),
       ContentType.series => _refresh(
           series,
-          () => _loadCategories(series, _api.getSeriesCategories, transform: _withAllCategory),
+          () => _loadCategories(series, () => _api.getSeriesCategories(forceRefresh: true), transform: _withAllCategory),
           _fetchSeriesStreams,
         ),
     };
@@ -270,8 +257,9 @@ class ContentProvider extends ChangeNotifier {
   Future<void> _selectCategory<TStream>(
     TabState<TStream> state,
     String categoryId,
-    Future<List<TStream>> Function(String categoryId) fetch,
-  ) async {
+    Future<List<TStream>> Function(String categoryId, {bool forceRefresh}) fetch, {
+    bool forceRefresh = false,
+  }) async {
     state.selectedCategoryId = categoryId;
 
     final cached = state._streamsCache[categoryId];
@@ -288,7 +276,7 @@ class ContentProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final streams = await fetch(categoryId);
+      final streams = await fetch(categoryId, forceRefresh: forceRefresh);
       state.streams = streams;
       state._streamsCache[categoryId] = streams;
       state.streamsStatus = LoadStatus.success;
@@ -306,7 +294,7 @@ class ContentProvider extends ChangeNotifier {
   Future<void> _refresh<TStream>(
     TabState<TStream> state,
     Future<void> Function() loadCategories,
-    Future<List<TStream>> Function(String categoryId) fetchStreams,
+    Future<List<TStream>> Function(String categoryId, {bool forceRefresh}) fetchStreams,
   ) async {
     state._streamsCache.clear();
     state.categoriesStatus = LoadStatus.idle;
@@ -314,7 +302,7 @@ class ContentProvider extends ChangeNotifier {
 
     final selected = state.selectedCategoryId;
     if (selected != null) {
-      await _selectCategory(state, selected, fetchStreams);
+      await _selectCategory(state, selected, fetchStreams, forceRefresh: true);
     }
   }
 }

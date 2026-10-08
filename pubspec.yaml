@@ -41,6 +41,11 @@ dependencies:
   # Abre o link de download da versão nova (aviso de atualização).
   url_launcher: ^6.3.1
 
+  # Cache em disco do catálogo (CatalogCache): pasta de cache do app + hash
+  # do nome do arquivo. Ambos já eram dependências indiretas.
+  path_provider: ^2.1.5
+  crypto: ^3.0.6
+
   # Gerenciamento de estado
   provider: ^6.1.2
 

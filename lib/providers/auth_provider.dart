@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import '../core/errors/app_exceptions.dart';
 import '../data/models/device_login_result.dart';
 import '../data/models/xtream_user_info.dart';
+import '../data/services/catalog_cache.dart';
 import '../data/services/device_auth_service.dart';
 import '../data/services/device_id_service.dart';
 import '../data/services/xtream_api_service.dart';
@@ -130,6 +131,7 @@ class AuthProvider extends ChangeNotifier {
         username: server.username,
         password: server.password,
         client: _xtreamHttpClient,
+        cache: CatalogCache(),
       );
       final userInfo = await apiService.login();
 

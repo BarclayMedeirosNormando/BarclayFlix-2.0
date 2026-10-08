@@ -50,7 +50,15 @@ void main() {
 
       expect(provider.live.categoriesStatus, LoadStatus.success);
       expect(provider.categoriesFor(ContentType.live).any((c) => c.name == 'Categoria A'), isTrue);
-      expect(provider.live.streams, isNotEmpty, reason: '"Todos" já foi selecionada e carregou os streams de A');
+      expect(
+        provider.live.streams,
+        isEmpty,
+        reason: 'carregar as categorias NÃO baixa nenhum stream sozinho (nada de "Todos" automática)',
+      );
+      expect(provider.live.selectedCategoryId, isNull);
+
+      await provider.selectCategory(ContentType.live, ContentProvider.allCategoriesId);
+      expect(provider.live.streams, isNotEmpty, reason: 'escolher "Todos" explicitamente carrega os streams de A');
 
       // Troca de servidor -- MESMO objeto ContentProvider (agora provider
       // de raiz do app, ver main.dart), mas outro XtreamApiService.
