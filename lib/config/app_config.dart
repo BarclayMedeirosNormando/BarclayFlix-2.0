@@ -8,4 +8,8 @@ class AppConfig {
     'APPS_SCRIPT_URL',
     defaultValue: '',
   );
+
+  /// `true` quando o app foi buildado sem `--dart-define=APPS_SCRIPT_URL=...`
+  /// — nesse caso nenhuma ativação pode funcionar.
+  static bool get isAppsScriptUrlMissing => appsScriptUrl.trim().isEmpty;
 }

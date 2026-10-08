@@ -6,6 +6,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'config/app_config.dart';
 import 'core/theme/app_theme.dart';
 import 'providers/auth_provider.dart';
 import 'providers/content_provider.dart';
@@ -40,7 +41,45 @@ Future<void> main() async {
     await windowManager.ensureInitialized();
   }
 
-  runApp(const IptvApp());
+  assert(
+    !AppConfig.isAppsScriptUrlMissing,
+    'APPS_SCRIPT_URL não definida. Rode com '
+    '--dart-define=APPS_SCRIPT_URL=https://script.google.com/macros/s/ID/exec '
+    '(ou use ./scripts/setup_env.ps1).',
+  );
+
+  runApp(
+    AppConfig.isAppsScriptUrlMissing
+        ? const _MissingConfigApp()
+        : const IptvApp(),
+  );
+}
+
+/// Mostrada no lugar do app quando o build não recebeu APPS_SCRIPT_URL —
+/// melhor um erro claro do que "falha de conexão" misteriosa na ativação.
+class _MissingConfigApp extends StatelessWidget {
+  const _MissingConfigApp();
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.darkTheme,
+      home: const Scaffold(
+        body: Center(
+          child: Padding(
+            padding: EdgeInsets.all(32),
+            child: Text(
+              'Build sem configuração de ativação (APPS_SCRIPT_URL).\n'
+              'Gere o app novamente com ./scripts/build_release.ps1.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 18),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class IptvApp extends StatelessWidget {

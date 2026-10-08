@@ -5,6 +5,7 @@ import '../../core/theme/app_theme.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/profiles_provider.dart';
 import '../activation/activation_screen.dart';
+import '../home/home_screen.dart';
 import '../server_selection/server_selection_screen.dart';
 
 /// Tela de abertura: só a marca do app (mesmo ícone/estilo do header da
@@ -24,6 +25,11 @@ class SplashScreen extends StatefulWidget {
 }
 
 class _SplashScreenState extends State<SplashScreen> {
+  /// Tentativas de consultar a ativação antes de desistir quando a falha é
+  /// de rede/serviço (sem `errorCode` do backend), e a espera entre elas.
+  static const _maxActivationAttempts = 3;
+  static const _retryDelay = Duration(seconds: 2);
+
   @override
   void initState() {
     super.initState();
@@ -43,16 +49,50 @@ class _SplashScreenState extends State<SplashScreen> {
       // em vez de logar direto no último servidor salvo -- o vínculo pode
       // ter mudado desde o último acesso, e a escolha do servidor agora é
       // sempre explícita, feita na ServerSelectionScreen.
-      final result = await provider.checkDeviceActivation();
+      final authProvider = context.read<AuthProvider>();
+      var result = await provider.checkDeviceActivation();
+
+      // [TESTE] Falha SEM código do backend = rede/serviço instável (Apps
+      // Script fora, timeout, Wi-Fi da TV ainda conectando). Tenta de novo
+      // algumas vezes antes de concluir qualquer coisa. Com código
+      // (inativo/expirado/nao_registrado) o backend respondeu de verdade:
+      // nunca repete.
+      var attempt = 1;
+      while (result == null &&
+          authProvider.errorCode == null &&
+          attempt < _maxActivationAttempts) {
+        await Future<void>.delayed(_retryDelay * attempt);
+        if (!mounted) return;
+        result = await provider.checkDeviceActivation();
+        attempt++;
+      }
       if (!mounted) return;
 
-      if (result != null) {
+      // Ainda sem resposta do backend (nenhum código) e há perfil salvo:
+      // entra com ele em vez de mandar o cliente pra tela de ativação por
+      // causa de um problema transitório de rede.
+      if (result == null && authProvider.errorCode == null) {
+        final entered = await provider.enterWithSavedProfile();
+        if (!mounted) return;
+        if (entered) {
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(builder: (_) => const HomeScreen()),
+            (route) => false,
+          );
+          return;
+        }
+      }
+
+      // Cópia final: `result` é reatribuído acima e, sendo capturado pela
+      // closure do builder, perderia a promoção para não-nulo.
+      final activation = result;
+      if (activation != null) {
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(
             builder: (_) => ServerSelectionScreen(
-              servers: result.servidores,
+              servers: activation.servidores,
               existingProfileId: savedProfile.id,
-              nomeCliente: result.nomeCliente,
+              nomeCliente: activation.nomeCliente,
             ),
           ),
         );
@@ -63,7 +103,6 @@ class _SplashScreenState extends State<SplashScreen> {
       // servidor removido etc) -- nunca cai aqui em silêncio: leva a
       // mensagem/código REAIS pra ActivationScreen decidir se mostra o erro
       // já de cara ou só começa a verificar em segundo plano.
-      final authProvider = context.read<AuthProvider>();
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
           builder: (_) => ActivationScreen(

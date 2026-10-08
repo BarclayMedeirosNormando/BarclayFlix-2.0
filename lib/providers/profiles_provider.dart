@@ -60,6 +60,41 @@ class ProfilesProvider extends ChangeNotifier {
     return _authProvider.checkDevice();
   }
 
+  /// [TESTE] Entra direto com o perfil salvo SEM consultar a ativação do
+  /// dispositivo (Apps Script). Usado pela SplashScreen só quando a
+  /// ativação ficou inalcançável por falha de rede/serviço (nunca quando o
+  /// backend respondeu inativo/expirado/nao_registrado): monta o
+  /// [ServerOption] a partir do [SavedProfile] e valida direto na Xtream.
+  /// Retorna `false` (com [AuthProvider.errorMessage] preenchido) se a
+  /// Xtream também não respondeu ou recusou a credencial.
+  Future<bool> enterWithSavedProfile() async {
+    final profile = savedProfile;
+    if (profile == null) return false;
+
+    final server = ServerOption(
+      nome: profile.nomeServidor ?? profile.nomeExibicao,
+      dns: profile.dns,
+      username: profile.xtreamUsername,
+      password: profile.xtreamPassword,
+    );
+
+    final result = await _authProvider.loginWithServer(server: server);
+    if (result == null) return false;
+
+    final updated = profile.copyWith(dataUltimoAcesso: DateTime.now());
+    _savedProfiles = [
+      updated,
+      ..._savedProfiles.where((existing) => existing.id != profile.id),
+    ];
+    try {
+      await _storageService.saveProfile(updated);
+    } catch (_) {
+      // Falha ao gravar só o "último acesso" nunca deve impedir a entrada.
+    }
+    notifyListeners();
+    return true;
+  }
+
   Future<bool> selectProfile(String id) async {
     final index = _savedProfiles.indexWhere((profile) => profile.id == id);
     if (index < 0) return false;
